@@ -1,6 +1,6 @@
 {
   "name": "session-panel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Right-hand panel: model, effort, context and rate limits; git, PR and CI per repo; subagent progress.",
   "author": { "name": "Nam Tran" }
 }
