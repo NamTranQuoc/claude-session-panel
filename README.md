@@ -33,6 +33,8 @@ Requirements:
 ## Use
 
 - The pane opens by itself when a session starts.
+- The GIT frame has a **↻** button.
+- The MODEL frame has two button rows. Pressing a model (`fable`, `opus`, `sonnet`, `haiku`) runs `/model <name>`; pressing an effort (`low`, `med`, `high`, `xh`, `max`) runs `/effort <level>`. The current one is highlighted. A row is hidden if the session has no such slash command. Switching model mid-session makes the next request re-bill the prompt cache.
 - `/panel` closes it, or opens it again.
 - Open Claude in a folder that holds several projects and each git repo gets its own entry (up to 12, found up to 3 levels deep, `node_modules` skipped).
 
@@ -44,14 +46,16 @@ Requirements:
 - **PR / CI** come from `gh pr view`. A branch with no PR falls back to its latest `gh run list` result.
 - **Subagent tasks** come from the subagent's `TodoWrite` calls: `x/y tasks`, ✓ done, ▶ doing, ○ waiting. A subagent that never calls `TodoWrite` shows only its tool count and last tool call.
 
-## Refresh rates
+## Refresh
 
-| Data | Every |
+| Data | When |
 | --- | --- |
-| Agents, model, usage | 2 s |
-| `git status` per repo | 10 s |
-| `gh` (PR, CI) per repo | 60 s |
-| Repo discovery | 2 min |
+| Agents, model, usage | Every 2 s (local calls, no network) |
+| Git, PR, CI, repo list | When a session starts; after a `Bash` tool call whose command runs `git` or `gh` (3 s after it finishes); when you press **↻** in the GIT frame |
+
+There is no polling for git or `gh`. The GIT frame shows how long ago it was read. Press **↻** (or `r` while the pane has focus) for a manual read, for example to see CI after a push.
+
+`git` status is read locally and never runs `git fetch`, so ahead/behind reflects your last fetch.
 
 ## Develop
 

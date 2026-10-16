@@ -2,9 +2,7 @@ import type { Register, RenderChildren, SessionUsage } from 'claude-code'
 
 const PANE = 'session-panel'
 const FAST_MS = 2000
-const GIT_MS = 10000
-const GH_MS = 60000
-const SCAN_MS = 120000
+const GIT_CMD = /(^|[\s;&|(])(git|gh)\s/
 const MAX_REPOS = 12
 const MAX_AGENTS = 8
 
@@ -60,6 +58,15 @@ const until = (iso: string | undefined, now: number) => {
   return `${mins}m`
 }
 
+const MODELS = ['fable', 'opus', 'sonnet', 'haiku']
+const EFFORTS: [label: string, arg: string][] = [['low', 'low'], ['med', 'medium'], ['high', 'high'], ['xh', 'xhigh'], ['max', 'max']]
+
+const ago = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+
+  return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`
+}
+
 const fit = (text: string, width: number) =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text
 
@@ -98,6 +105,11 @@ export const register: Register = on => {
   let effort = ''
   let usage: SessionUsage | undefined
   let isOpen = false
+  let isRefreshing = false
+  let gitAt = 0
+  let refreshAll: (() => void) | undefined
+  let commands = new Set<string>()
+  let debounce: { cancel: () => void } | undefined
 
   const view = (id: string, now: number): AgentView => {
     let one = agents.get(id)
@@ -111,6 +123,8 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     for (const t of timers.splice(0)) t.cancel()
+    debounce?.cancel()
+    commands = new Set((await $.command.list()).map(c => c.name))
     await $.command.register({ name: 'panel', description: 'Toggle the session panel (git, subagents, usage)' })
     const open = async () => {
       isOpen = true
@@ -120,7 +134,6 @@ export const register: Register = on => {
 
     let busyGit = false
     let busyGh = false
-    let lastGh = 0
 
     const refreshAgents = async () => {
       const now = await $.clock.now()
@@ -240,24 +253,23 @@ export const register: Register = on => {
       await refreshAgents()
       await refreshUsage()
     })
-    const git = safe(async () => {
-      await refreshGit()
-      const now = await $.clock.now()
-      if (now - lastGh > GH_MS) {
-        lastGh = now
-        void refreshGh().then(() => $.ui.invalidate('ui.render'))
+    refreshAll = safe(async () => {
+      if (isRefreshing) return
+      isRefreshing = true
+      if (isOpen) $.ui.invalidate('ui.render')
+      try {
+        await scan()
+        await refreshGit()
+        await refreshGh()
+        gitAt = await $.clock.now()
+      } finally {
+        isRefreshing = false
       }
     })
-    const rescan = safe(async () => {
-      await scan()
-      await refreshGit()
-    })
 
-    rescan()
+    refreshAll()
     fast()
-    timers.push($.clock.every(FAST_MS, fast), $.clock.every(GIT_MS, git), $.clock.every(SCAN_MS, rescan))
-    // first gh read once the scan has found the repos
-    timers.push($.clock.after(4000, () => { lastGh = 0; git() }))
+    timers.push($.clock.every(FAST_MS, fast))
 
     return next(e)
   })
@@ -309,19 +321,27 @@ export const register: Register = on => {
       }
     }
 
+    if (e.tool === 'Bash' && GIT_CMD.test(String((e as unknown as Record<string, unknown>).command ?? ''))) {
+      const ran = await next(e)
+      debounce?.cancel()
+      debounce = $.clock.after(3000, () => refreshAll?.())
+
+      return ran
+    }
+
     return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const width = Math.max(30, (e.viewport?.columns ?? 56) - 6)
     const now = await $.clock.now()
 
-    const frame = (title: string, color: string, right: string, rows: RenderChildren) => (
+    const frame = (title: string, color: string, right: RenderChildren, rows: RenderChildren) => (
       <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1} marginBottom={0}>
         <Box justifyContent="space-between">
           <Text bold color={color}>{title}</Text>
-          <Text dimColor>{right}</Text>
+          {right}
         </Box>
         {rows}
       </Box>
@@ -354,6 +374,13 @@ export const register: Register = on => {
             </Box>
           )
         })
+
+    const gitRight = (
+      <Box>
+        <Text dimColor>{isRefreshing ? 'refreshing… ' : gitAt ? `${repos.length} repo${repos.length === 1 ? '' : 's'} · ${ago(now - gitAt)} ` : ''}</Text>
+        <Button key="refresh" label="↻" hotkey="r" onPress={() => refreshAll?.()} />
+      </Box>
+    )
 
     // ── AGENTS ──
     const all = [...agents.values()].sort((a, b) => Number(!!a.endedAt) - Number(!!b.endedAt) || b.startedAt - a.startedAt)
@@ -407,12 +434,36 @@ export const register: Register = on => {
         </Text>
       )
     const window = ctx && ctx.window >= 1e6 ? `${ctx.window / 1e6}M` : `${Math.round((ctx?.window ?? 0) / 1000)}k`
+    const apply = async (command: 'model' | 'effort', arg: string) => {
+      try {
+        const done = await $.command.run({ command, args: arg })
+        $.ui.toast(done.text ? String(done.text).split('\n')[0] ?? `/${command} ${arg}` : `/${command} ${arg}`)
+        if (command === 'effort') effort = arg
+      } catch (err) {
+        $.ui.toast(`/${command} ${arg} failed: ${String(err)}`)
+      }
+      model = await $.session.model()
+      $.ui.invalidate('ui.render')
+    }
+    const picker = (label: string, command: 'model' | 'effort', options: [string, string][], isCurrent: (arg: string) => boolean) =>
+      commands.has(command) ? (
+        <Box>
+          <Text dimColor>{label.padEnd(7)}</Text>
+          {options.map(([text, arg]) => (
+            <Box marginRight={1}>
+              <Button key={`${command}-${arg}`} label={text} variant={isCurrent(arg) ? 'primary' : undefined} dimColor={!isCurrent(arg)} onPress={() => apply(command, arg)} />
+            </Box>
+          ))}
+        </Box>
+      ) : null
     const modelRows = [
       <Text>
         <Text bold color="claude">{model || '…'}</Text>
         <Text dimColor>  effort </Text>
         <Text bold>{effort || '–'}</Text>
       </Text>,
+      picker('model', 'model', MODELS.map(m => [m, m]), arg => model.toLowerCase().includes(arg)),
+      picker('effort', 'effort', EFFORTS, arg => effort === arg),
       meter('ctx', pct, `${Math.round((ctx?.tokens ?? 0) / 1000)}k/${window}`),
       meter('5h', five?.percentUsed, five ? `reset ${until(five.resetsAt, now)}` : ''),
       meter('7d', seven?.percentUsed, seven ? `reset ${until(seven.resetsAt, now)}` : ''),
@@ -421,9 +472,9 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {frame('MODEL', 'claude', '', modelRows)}
-        {frame('GIT', 'permission', `${repos.length} repo${repos.length === 1 ? '' : 's'}`, gitRows)}
-        {frame('SUBAGENTS', 'warning', `${running} running · ${agents.size} total`, agentRows)}
+        {frame('MODEL', 'claude', <Text dimColor>{''}</Text>, modelRows)}
+        {frame('GIT', 'permission', gitRight, gitRows)}
+        {frame('SUBAGENTS', 'warning', <Text dimColor>{`${running} running · ${agents.size} total`}</Text>, agentRows)}
       </Box>
     )
   })

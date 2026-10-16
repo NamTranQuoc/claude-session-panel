@@ -13,8 +13,10 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One module draws
 ## How it works
 
 - State is plain module variables (`repos`, `agents`, `model`, `effort`, `usage`). There is no `$.state` and no types contract. A reload restarts them, which is fine: everything is re-read on the next tick.
-- `session.start` registers `/panel`, opens the pane (`columns: 56`) and starts four timers: agents+usage (2 s), `git status` (10 s), `gh` (60 s, started from the git tick), repo scan (2 min). Timers are cancelled and recreated on every `session.start`, so a hot reload never doubles them.
-- After each refresh the timer calls `$.ui.invalidate('ui.render')`, only while `isOpen`.
+- `session.start` registers `/panel`, opens the pane (`columns: 56`), starts one timer (agents + usage, 2 s; local calls only) and calls `refreshAll()` once.
+- `refreshAll` (scan repos, `git status`, `gh`) has no timer. It runs at session start, from the **↻** button in the GIT frame, and from the `tool.call` hook 3 s (debounced) after a `Bash` call whose command matches `GIT_CMD` (`git` or `gh` as a command word). `isRefreshing` stops overlap and drives the "refreshing…" label; `gitAt` drives the "Ns ago" label.
+- MODEL frame pickers call `$.command.run({ command: 'model' | 'effort', args })`, i.e. the built-in slash commands, queued until the session is idle. `commands` (from `$.command.list()` at `session.start`) decides whether a row is drawn. `effort` is set optimistically on press and corrected by the next `turn.step`.
+- Each refresh ends with `$.ui.invalidate('ui.render')` while `isOpen`.
 - `ui.render` on `{ component: 'Pane', requestId: 'session-panel' }` draws three `frame(...)` boxes in this order: MODEL, GIT, SUBAGENTS.
 - Data sources:
   - model, usage: `$.session.model()`, `$.session.usage()` (context %, `rateLimits` with `five_hour` / `seven_day`, cost).
@@ -47,7 +49,7 @@ Tests run with no process or network. `$.ui.mount` needs `mock.clock(on)` becaus
 - Rate limits are percentages only.
 - The dock needs 110+ columns (144 when opened unasked); `/panel` asks explicitly.
 - `tool.call` and `ui.close` hooks have no `.catch`: if one throws it is skipped, which is acceptable for observers.
-- The `gh` calls assume `gh` is signed in; each repo costs up to two `gh` calls per minute.
+- The `gh` calls assume `gh` is signed in; each refresh costs up to two `gh` calls per repo.
 
 ## Conventions
 
