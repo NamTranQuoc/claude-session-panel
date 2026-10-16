@@ -43,7 +43,7 @@ Requirements:
 - **Effort** is read from the main loop's model requests, so it shows `–` until the first request.
 - **ctx** is the last response's input tokens over the model's window.
 - **5h / 7d** are the percentages the API last reported, with the time left until the window resets. The API gives no token counts, so none are shown.
-- **PR / CI** come from `gh pr view`. A branch with no PR falls back to its latest `gh run list` result.
+- **PR / CI** come from `gh pr view`. Click the PR text to open the pull request, or the CI text to open its checks page, in your default browser (`open`, falling back to `xdg-open`; only `https://` links). A branch with no PR falls back to its latest `gh run list` result.
 - **Subagent tasks** come from the subagent's `TodoWrite` calls: `x/y tasks`, ✓ done, ▶ doing, ○ waiting. A subagent that never calls `TodoWrite` shows only its tool count and last tool call.
 
 ## Refresh

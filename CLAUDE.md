@@ -16,6 +16,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One module draws
 - `session.start` registers `/panel`, opens the pane (`columns: 56`), starts one timer (agents + usage, 2 s; local calls only) and calls `refreshAll()` once.
 - `refreshAll` (scan repos, `git status`, `gh`) has no timer. It runs at session start, from the **↻** button in the GIT frame, and from the `tool.call` hook 3 s (debounced) after a `Bash` call whose command matches `GIT_CMD` (`git` or `gh` as a command word). `isRefreshing` stops overlap and drives the "refreshing…" label; `gitAt` drives the "Ns ago" label.
 - MODEL frame pickers call `$.command.run({ command: 'model' | 'effort', args })`, i.e. the built-in slash commands, queued until the session is idle. `commands` (from `$.command.list()` at `session.start`) decides whether a row is drawn. `effort` is set optimistically on press and corrected by the next `turn.step`.
+- PR and CI are `Button plain` rows. A press runs `openUrl` (`open`, else `xdg-open`, https links only). PR url comes from `gh pr view --json url`; CI url is `<pr url>/checks`, or the run's `url` when there is no PR.
 - Each refresh ends with `$.ui.invalidate('ui.render')` while `isOpen`.
 - `ui.render` on `{ component: 'Pane', requestId: 'session-panel' }` draws three `frame(...)` boxes in this order: MODEL, GIT, SUBAGENTS.
 - Data sources:

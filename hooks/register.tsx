@@ -6,8 +6,8 @@ const GIT_CMD = /(^|[\s;&|(])(git|gh)\s/
 const MAX_REPOS = 12
 const MAX_AGENTS = 8
 
-type Ci = { state: 'pass' | 'fail' | 'pending'; done: number; total: number }
-type Pr = { number: number; title: string; state: string; isDraft: boolean; review?: string }
+type Ci = { state: 'pass' | 'fail' | 'pending'; done: number; total: number; url?: string }
+type Pr = { number: number; title: string; state: string; isDraft: boolean; review?: string; url?: string }
 type Repo = {
   dir: string
   name: string
@@ -213,25 +213,26 @@ export const register: Register = on => {
       try {
         for (const repo of repos) {
           const prRun = await $.process.run(
-            ['gh', 'pr', 'view', '--json', 'number,title,state,isDraft,reviewDecision,statusCheckRollup'],
+            ['gh', 'pr', 'view', '--json', 'number,title,state,isDraft,reviewDecision,statusCheckRollup,url'],
             { cwd: repo.dir, timeoutMs: 20000 },
           ).catch(() => undefined)
           if (prRun && prRun.exitCode === 0) {
             const j = JSON.parse(prRun.stdout) as Record<string, any>
-            repo.pr = { number: j.number, title: j.title, state: j.state, isDraft: !!j.isDraft, review: j.reviewDecision || undefined }
+            repo.pr = { number: j.number, title: j.title, state: j.state, isDraft: !!j.isDraft, review: j.reviewDecision || undefined, url: j.url }
             repo.ci = parseCi(j.statusCheckRollup)
+            if (repo.ci && j.url) repo.ci.url = `${j.url}/checks`
             repo.hasGh = true
             continue
           }
           repo.pr = undefined
           const runs = await $.process.run(
-            ['gh', 'run', 'list', '--branch', repo.branch, '--limit', '1', '--json', 'status,conclusion'],
+            ['gh', 'run', 'list', '--branch', repo.branch, '--limit', '1', '--json', 'status,conclusion,url'],
             { cwd: repo.dir, timeoutMs: 20000 },
           ).catch(() => undefined)
           if (runs && runs.exitCode === 0) {
             const r = (JSON.parse(runs.stdout) as Record<string, string>[])[0]
             repo.ci = r
-              ? { state: r.status !== 'completed' ? 'pending' : r.conclusion === 'success' ? 'pass' : 'fail', done: 1, total: 1 }
+              ? { state: r.status !== 'completed' ? 'pending' : r.conclusion === 'success' ? 'pass' : 'fail', done: 1, total: 1, url: r.url }
               : undefined
           } else {
             repo.ci = undefined
@@ -348,6 +349,12 @@ export const register: Register = on => {
     )
 
     // ── GIT ──
+    const openUrl = async (url?: string) => {
+      if (!url || !/^https:\/\//.test(url)) return
+      const ran = await $.process.run(['open', url]).catch(() => undefined)
+      if (!ran || ran.exitCode !== 0) await $.process.run(['xdg-open', url]).catch(() => undefined)
+    }
+
     const gitRows = repos.length === 0
       ? [<Text dimColor>no git repository under the session folder</Text>]
       : repos.map(r => {
@@ -361,16 +368,20 @@ export const register: Register = on => {
                 <Text color="permission">{fit(r.branch, width - 18)}</Text>
                 <Text dimColor>{r.ahead ? ` ↑${r.ahead}` : ''}{r.behind ? ` ↓${r.behind}` : ''}{r.dirty ? ` ±${r.dirty}` : ' clean'}</Text>
               </Text>
-              <Text>
+              <Box>
                 {r.pr ? (
-                  <Text color={r.pr.state === 'MERGED' ? 'merged' : undefined}>
-                    PR #{r.pr.number} {r.pr.isDraft ? 'draft' : r.pr.state.toLowerCase()}{r.pr.review ? ` · ${r.pr.review.toLowerCase().replace('_', ' ')}` : ''}
-                  </Text>
+                  <Button plain key={`pr-${r.dir}`} label={`PR #${r.pr.number} ${r.pr.isDraft ? 'draft' : r.pr.state.toLowerCase()}${r.pr.review ? ` · ${r.pr.review.toLowerCase().replace('_', ' ')}` : ''}`} onPress={() => openUrl(r.pr?.url)} />
                 ) : (
                   <Text dimColor>{r.hasGh ? 'no PR' : 'no gh / not on GitHub'}</Text>
                 )}
-                {r.ci ? <Text color={ciColor}>  CI {ciIcon} {r.ci.done}/{r.ci.total}</Text> : <Text dimColor>  CI –</Text>}
-              </Text>
+                {r.ci ? (
+                  <Button plain key={`ci-${r.dir}`} onPress={() => openUrl(r.ci?.url)}>
+                    <Text color={ciColor}>{`  CI ${ciIcon} ${r.ci.done}/${r.ci.total}`}</Text>
+                  </Button>
+                ) : (
+                  <Text dimColor>  CI –</Text>
+                )}
+              </Box>
             </Box>
           )
         })
