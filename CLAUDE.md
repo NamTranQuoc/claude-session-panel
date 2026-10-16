@@ -15,7 +15,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One module draws
 - State is plain module variables (`repos`, `agents`, `model`, `effort`, `usage`). There is no `$.state` and no types contract. A reload restarts them, which is fine: everything is re-read on the next tick.
 - `session.start` registers `/panel`, opens the pane (`columns: 56`), starts one timer (agents + usage, 2 s; local calls only) and calls `refreshAll()` once.
 - `refreshAll` (scan repos, `git status`, `gh`) has no timer. It runs at session start, from the **↻** button in the GIT frame, and from the `tool.call` hook 3 s (debounced) after a `Bash` call whose command matches `GIT_CMD` (`git` or `gh` as a command word). `isRefreshing` stops overlap and drives the "refreshing…" label; `gitAt` drives the "Ns ago" label.
-- MODEL frame pickers call `$.command.run({ command: 'model' | 'effort', args })`, i.e. the built-in slash commands, queued until the session is idle. `commands` (from `$.command.list()` at `session.start`) decides whether a row is drawn. `effort` is set optimistically on press and corrected by the next `turn.step`.
+- MODEL frame pickers write the `/config` rows for model and effort with `$.config.set`, found by key or label in `$.config.list()` at `session.start` (`settings`). That applies at once, mid-turn included, and writes nothing to the chat. With no such row they fall back to `$.command.run({ command: 'model' | 'effort', args })`, queued until idle. A `classic.PreModelSwitch` hook answers `allow` while `isSwitching`, so a pane switch skips the cache-loss prompt. A row is drawn when `settings` or `commands` has it. `effort` is set optimistically on press and corrected by the next `turn.step`.
 - PR and CI are `Button plain` rows. A press runs `openUrl` (`open`, else `xdg-open`, https links only). PR url comes from `gh pr view --json url`; CI url is `<pr url>/checks`, or the run's `url` when there is no PR.
 - Each refresh ends with `$.ui.invalidate('ui.render')` while `isOpen`.
 - `ui.render` on `{ component: 'Pane', requestId: 'session-panel' }` draws three `frame(...)` boxes in this order: MODEL, GIT, SUBAGENTS.
@@ -24,7 +24,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One module draws
   - effort: captured from `turn.step` on the main loop (`e.agentId === undefined`).
   - agents: `$.agent.list()` plus the `tool.call` hook, which reads `e.agentId` and `TodoWrite` input.
   - git: `$.process.run(['git', '-C', dir, 'status', '--porcelain=v1', '-b'])`; PR/CI: `gh pr view --json …`, fallback `gh run list`.
-  - repo discovery: `find <cwd> -maxdepth 3 -name .git`.
+  - repo discovery: `find <root> -maxdepth 3 -name .git`, `root` being `$.session.cwd()` read once at `session.start` (the session's directory follows the Bash tool's `cd`).
 
 ## Add a feature
 

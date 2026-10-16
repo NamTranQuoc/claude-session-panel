@@ -1,4 +1,4 @@
-import type { Register, RenderChildren, SessionUsage } from 'claude-code'
+import type { ConfigRow, Register, RenderChildren, SessionUsage } from 'claude-code'
 
 const PANE = 'session-panel'
 const FAST_MS = 2000
@@ -109,6 +109,8 @@ export const register: Register = on => {
   let gitAt = 0
   let refreshAll: (() => void) | undefined
   let commands = new Set<string>()
+  const settings = new Map<'model' | 'effort', ConfigRow>()
+  let isSwitching = false
   let debounce: { cancel: () => void } | undefined
 
   const view = (id: string, now: number): AgentView => {
@@ -125,6 +127,12 @@ export const register: Register = on => {
     for (const t of timers.splice(0)) t.cancel()
     debounce?.cancel()
     commands = new Set((await $.command.list()).map(c => c.name))
+    settings.clear()
+    for (const row of await $.config.list()) {
+      if (row.isLocked) continue
+      if (/^model$/i.test(row.key) || /^model$/i.test(row.label)) settings.set('model', row)
+      else if (/effort/i.test(row.key) || /effort/i.test(row.label)) settings.set('effort', row)
+    }
     await $.command.register({ name: 'panel', description: 'Toggle the session panel (git, subagents, usage)' })
     const open = async () => {
       isOpen = true
@@ -134,6 +142,8 @@ export const register: Register = on => {
 
     let busyGit = false
     let busyGh = false
+    // Pinned at start: the session's directory follows every `cd` the Bash tool runs.
+    const root = await $.session.cwd()
 
     const refreshAgents = async () => {
       const now = await $.clock.now()
@@ -162,7 +172,6 @@ export const register: Register = on => {
     }
 
     const scan = async () => {
-      const root = await $.session.cwd()
       const found = await $.process.run(
         ['find', root, '-maxdepth', '3', '-name', '.git', '-not', '-path', '*/node_modules/*'],
         { timeoutMs: 15000 },
@@ -302,6 +311,13 @@ export const register: Register = on => {
     }
 
     return yield* next(e)
+  })
+
+  // A switch started from the pane is the person's own pick: skip the cache-loss prompt.
+  on('classic.PreModelSwitch', async ($, e, next) => {
+    const result = await next(e)
+
+    return isSwitching ? { ...result, permissionDecision: 'allow' as const } : result
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -445,19 +461,31 @@ export const register: Register = on => {
         </Text>
       )
     const window = ctx && ctx.window >= 1e6 ? `${ctx.window / 1e6}M` : `${Math.round((ctx?.window ?? 0) / 1000)}k`
+    // The /config row applies at once, mid-turn included; the slash command waits for idle.
     const apply = async (command: 'model' | 'effort', arg: string) => {
+      const row = settings.get(command)
+      isSwitching = true
       try {
-        const done = await $.command.run({ command, args: arg })
-        $.ui.toast(done.text ? String(done.text).split('\n')[0] ?? `/${command} ${arg}` : `/${command} ${arg}`)
-        if (command === 'effort') effort = arg
+        if (row) {
+          const value = row.options?.find(o => o.toLowerCase() === arg) ?? row.options?.find(o => o.toLowerCase().includes(arg)) ?? arg
+          const { deny } = await $.config.set({ key: row.key, value })
+          $.ui.toast(deny ? `${command} ${arg}: ${deny}` : `${command} → ${arg}`)
+          if (!deny && command === 'effort') effort = arg
+        } else {
+          const done = await $.command.run({ command, args: arg })
+          $.ui.toast(done.text ? String(done.text).split('\n')[0] ?? `/${command} ${arg}` : `/${command} ${arg}`)
+          if (command === 'effort') effort = arg
+        }
       } catch (err) {
-        $.ui.toast(`/${command} ${arg} failed: ${String(err)}`)
+        $.ui.toast(`${command} ${arg} failed: ${String(err)}`)
+      } finally {
+        isSwitching = false
       }
       model = await $.session.model()
       $.ui.invalidate('ui.render')
     }
     const picker = (label: string, command: 'model' | 'effort', options: [string, string][], isCurrent: (arg: string) => boolean) =>
-      commands.has(command) ? (
+      settings.has(command) || commands.has(command) ? (
         <Box>
           <Text dimColor>{label.padEnd(7)}</Text>
           {options.map(([text, arg]) => (

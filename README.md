@@ -34,7 +34,7 @@ Requirements:
 
 - The pane opens by itself when a session starts.
 - The GIT frame has a **↻** button.
-- The MODEL frame has two button rows. Pressing a model (`fable`, `opus`, `sonnet`, `haiku`) runs `/model <name>`; pressing an effort (`low`, `med`, `high`, `xh`, `max`) runs `/effort <level>`. The current one is highlighted. A row is hidden if the session has no such slash command. Switching model mid-session makes the next request re-bill the prompt cache.
+- The MODEL frame has two button rows: models (`fable`, `opus`, `sonnet`, `haiku`) and efforts (`low`, `med`, `high`, `xh`, `max`). A press changes the setting at once, even while Claude is working; the next request uses it. Nothing is posted to the chat and there is no confirm prompt. The current one is highlighted. Switching model mid-session makes the next request re-bill the prompt cache.
 - `/panel` closes it, or opens it again.
 - Open Claude in a folder that holds several projects and each git repo gets its own entry (up to 12, found up to 3 levels deep, `node_modules` skipped).
 
