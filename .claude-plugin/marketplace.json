@@ -1,0 +1,13 @@
+{
+  "name": "claude-session-panel",
+  "owner": {
+    "name": "Nam Tran"
+  },
+  "plugins": [
+    {
+      "name": "session-panel",
+      "source": "./"
+    }
+  ],
+  "description": "Claude Code mods by Nam Tran."
+}
