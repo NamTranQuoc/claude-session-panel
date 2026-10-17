@@ -1,14 +1,14 @@
 # claude-session-panel
 
-A Claude Code mod that docks a panel to the right of the transcript. It keeps three things in view while you work:
+A Claude Code mod that docks a panel to the right of the transcript, with three tabs:
 
-| Frame | Shows |
+| Tab | Holds |
 | --- | --- |
-| **MODEL** | Model, effort, context window %, 5-hour and 7-day rate limits with reset time, session cost |
-| **GIT** | Every git repo under the session folder: branch, ahead/behind, changed files, PR state and review, CI result |
-| **SUBAGENTS** | Each subagent: status, elapsed time, task progress, current task, last tool call |
+| **Overview** | MODEL (model, effort, context %, 5-hour and 7-day rate limits, cost), GIT (each repo's branch, changes, PR, CI) and SUBAGENTS (each subagent's progress, plus the model and effort new subagents get) |
+| **Explain** | Side chats about the session: ask as many follow-up questions as you like; answers are brief and nothing is ever run or changed |
+| **Decisions** | The numbered questions (D1, D2, …) the main agent needs you to settle; answer them and submit the answers back |
 
-It replaces a status line that carried the same model and usage figures.
+It also gives the main agent its working rules: it plans with you and hands implementation to subagents.
 
 ## Install
 
@@ -29,14 +29,45 @@ Requirements:
 - `git` on the PATH.
 - `gh` signed in (`gh auth login`) for PR and CI. Without it the GIT frame shows `no gh / not on GitHub`.
 - A terminal at least 110 columns wide. Narrower, the pane waits undrawn. Run `/panel` to ask for it explicitly.
+- Answering in the pane needs a text input: terminal, desktop and VS Code have one; on mobile the pane is read-only.
 
 ## Use
 
-- The pane opens by itself when a session starts.
+- The pane opens by itself when an interactive session starts. `/panel` closes it, or opens it again.
+- The tab bar on top switches tabs. `Explain 2` and `Decisions 3` count open chats and open decisions.
+
+### Overview
+
+- The MODEL frame shows the model and the effort as two dropdowns. Press one to list its options (models `fable`, `opus`, `sonnet`, `haiku`; efforts `low` to `max`), press an option to pick it, or press the dropdown again to close the list. A pick changes the setting at once, even while Claude is working; the next request uses it. Nothing is posted to the chat and there is no confirm prompt. Switching model mid-session makes the next request re-bill the prompt cache.
+- The SUBAGENTS frame has the same two dropdowns for subagents (`inherit` leaves the choice to Claude Code). A pick applies to subagents started after it:
+  - A model or effort you ask for in your prompt wins over the pick.
+  - Forks always run on the main session's model and effort.
 - The GIT frame has a **↻** button.
-- The MODEL frame has two button rows: models (`fable`, `opus`, `sonnet`, `haiku`) and efforts (`low`, `med`, `high`, `xh`, `max`). A press changes the setting at once, even while Claude is working; the next request uses it. Nothing is posted to the chat and there is no confirm prompt. The current one is highlighted. Switching model mid-session makes the next request re-bill the prompt cache.
-- `/panel` closes it, or opens it again.
 - Open Claude in a folder that holds several projects and each git repo gets its own entry (up to 12, found up to 3 levels deep, `node_modules` skipped).
+
+### Explain
+
+- **+** opens a chat; **x** closes the selected one and deletes its history. Several chats can be open; each keeps its own history.
+- Each question works like `/btw`: it is answered over the main session's latest request (read from the prompt cache, so it is cheap while that cache is warm), with the chat's last 20 questions and answers, in the `/brief` style (`~/.claude/skills/brief/SKILL.md` when present). Tools are refused, so a chat never acts.
+- Answers come from the main session's model and arrive whole, not streamed.
+- `No context yet` means the main session has not sent a request yet, or was cleared.
+- `D3` in a question names that decision.
+
+### Decisions
+
+- The main agent adds, changes and removes items with its `decisions` tool. Each has a title, a detail and zero or more options.
+- Press an item to show its detail, its options (`1.`, `2.`, …) and an answer field. Type an option number, free text, or both, and press Enter to save: `●` marks an answered item.
+- **Submit** sends every saved answer to the main agent as one prompt; sent items show `↑` until the agent updates or removes them.
+- While the main agent is working, answering and Submit are locked; the list and details stay readable.
+- `D3` in your own prompt attaches that decision for the main agent.
+
+### Working rules for the main agent
+
+The panel adds a fixed section to the system prompt of every interactive session:
+
+- Questions that need your choice go to Decisions.
+- In the main conversation the agent gathers context and writes the plan with you; it does not implement code or write contracts itself.
+- It asks you to confirm the plan, then assigns implementation to subagents.
 
 ### What each field means
 

@@ -1,6 +1,6 @@
 {
   "name": "session-panel",
-  "version": "0.1.2",
-  "description": "Right-hand panel: model, effort, context and rate limits; git, PR and CI per repo; subagent progress.",
+  "version": "0.2.0",
+  "description": "Right-hand panel with three tabs: overview (model, usage, git, subagents), explain side chats, and the decisions the main agent needs from you.",
   "author": { "name": "Nam Tran" }
 }
