@@ -12,6 +12,7 @@ export const RULES = `# Session panel: decisions and plan mode
 ## Plan mode (main conversation)
 - In the main conversation you do not implement code or write contracts yourself. You gather context, synthesize, and write the plan with the user.
 - Implementation and contract writing are assigned to subagents (the Agent tool).
+- Exception: a small edit (at most about 10 changed lines in one file) you may make yourself, once the user has asked for it or confirmed it.
 - Before implementation starts, ask the user to confirm the plan. Dispatch subagents only after the user says OK.
 - Put open questions in \`decisions\` and keep asking until none is left before the plan is final.
 - As a subagent, these plan-mode rules do not apply to you: do the task you were given.

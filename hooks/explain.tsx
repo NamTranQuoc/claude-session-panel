@@ -2,7 +2,6 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { SessionPanelChat, SessionPanelDecision, SessionPanelTab } from '../types'
-import { BRIEF_PATH, briefRules } from './brief'
 import { fit, listDecisions, PANE } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
@@ -12,33 +11,49 @@ const nextChatId = atom({ plugin: 'session-panel', key: 'nextChatId' } as const,
 const decisions = atom({ plugin: 'session-panel', key: 'decisions' } as const, [] as SessionPanelDecision[])
 
 const MAX_TURNS = 20
+// History sent with a question, newest first, up to this many characters.
+const MAX_HISTORY_CHARS = 6000
+// A reply that wrote this many prompt tokens to the cache re-sent the main context at full price.
+const COLD_CACHE_TOKENS = 20000
+
+// The /brief rules that shape an answer, condensed.
+const BRIEF = `- Same language as the question; technical terms and names stay in English.
+- Cut words, never information: keep every case, condition, number, path and caveat that applies.
+- No openers, recaps, offers or closers; first line is content.
+- One fact: 1-3 plain sentences. Several points: a bold one-line conclusion per point, one supporting fact per sub-bullet, at most two levels.
+- Explain what code does, when, and with what effect; point at \`file:line\` or a symbol instead of quoting code.
+- Say each fact once; "not found" is a valid answer.`
 
 const RULES = `You are answering a side question about the conversation above, in a separate explain chat the user opened from a panel.
 - Explain only: concepts, keywords, decisions and code in this session. Never claim to have run, read, changed or checked anything now; every tool call is refused here.
 - If an answer needs reading files or running commands, say it cannot be checked from this chat and suggest asking in the main conversation.
 - D<n> names an item of the user's open decisions, listed below.`
 
-// The explain prompt: rules, open decisions, the chat's own history, then the new question.
-export const explainPrompt = (brief: string, openDecisions: string, history: SessionPanelChat['history'], question: string) => {
-  const turns = history
-    .slice(-MAX_TURNS)
-    .map((turn, i) => `Q${i + 1}: ${turn.question}\nA${i + 1}: ${turn.answer}`)
-    .join('\n\n')
+// The explain prompt: rules, open decisions, the chat's recent history, then the new question.
+export const explainPrompt = (openDecisions: string, history: SessionPanelChat['history'], question: string) => {
+  const turns: string[] = []
+  let size = 0
+  for (const turn of history.slice(-MAX_TURNS).reverse()) {
+    const text = `Q: ${turn.question}\nA: ${turn.answer}`
+    if (size + text.length > MAX_HISTORY_CHARS && turns.length > 0) break
+    turns.unshift(text)
+    size += text.length
+  }
 
   return [
-    `<explain-rules>\n${RULES}\n\nAnswer style:\n${brief}\n</explain-rules>`,
+    `<explain-rules>\n${RULES}\n\nAnswer style:\n${BRIEF}\n</explain-rules>`,
     `<open-decisions>\n${openDecisions}\n</open-decisions>`,
-    turns ? `<side-chat-so-far>\n${turns}\n</side-chat-so-far>` : '',
+    turns.length ? `<side-chat-so-far>\n${turns.join('\n\n')}\n</side-chat-so-far>` : '',
     `<new-question>\n${question}\n</new-question>`,
   ]
     .filter(Boolean)
     .join('\n\n')
 }
 
+const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n))
+
 // The Explain tab: side chats, each question one `$.model.fork` over the main thread's last request.
 export const registerExplain = (on: On) => {
-  let brief: string | undefined
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if ((await read($, tab)) !== 'explain') return next(e)
     const ui = $.ui.resolve(e)
@@ -57,11 +72,7 @@ export const registerExplain = (on: On) => {
       const current = (await read($, chats)).find(one => one.id === id)
       if (!current || current.isAsking || !question.trim()) return
       await patch(id, one => ({ ...one, draft: '', isAsking: true, notice: undefined }))
-      if (brief === undefined) {
-        const home = await $.env.get('HOME')
-        brief = briefRules(home ? await $.fs.read(`${home}/${BRIEF_PATH}`).catch(() => undefined) : undefined)
-      }
-      const prompt = explainPrompt(brief, listDecisions(await read($, decisions)), current.history, question)
+      const prompt = explainPrompt(listDecisions(await read($, decisions)), current.history, question)
 
       const reply = await $.model.fork({ prompt }).catch(err => ({ isAnswered: false as const, reason: 'thrown' as const, err }))
       const notice = reply.isAnswered
@@ -79,7 +90,21 @@ export const registerExplain = (on: On) => {
         isAsking: false,
         notice,
         draft: reply.isAnswered ? '' : question,
-        history: reply.isAnswered ? [...one.history, { question, answer: reply.text }] : one.history,
+        history: reply.isAnswered
+          ? [
+              ...one.history,
+              {
+                question,
+                answer: reply.text,
+                usage: {
+                  input: reply.usage.input_tokens,
+                  cacheRead: reply.usage.cache_read_input_tokens,
+                  cacheWrite: reply.usage.cache_creation_input_tokens,
+                  output: reply.usage.output_tokens,
+                },
+              },
+            ]
+          : one.history,
       }))
     }
 
@@ -132,6 +157,14 @@ export const registerExplain = (on: On) => {
           <Box flexDirection="column" marginTop={1}>
             <Text bold color="permission">{fit(`› ${turn.question}`, width * 3)}</Text>
             <Markdown text={turn.answer} />
+            {turn.usage ? (
+              <Text dimColor>
+                {`in ${tokens(turn.usage.input)} · cached ${tokens(turn.usage.cacheRead)} · written ${tokens(turn.usage.cacheWrite)} · out ${tokens(turn.usage.output)}`}
+              </Text>
+            ) : null}
+            {turn.usage && turn.usage.cacheWrite >= COLD_CACHE_TOKENS ? (
+              <Text color="warning">{`cache was cold: ${tokens(turn.usage.cacheWrite)} tokens of the main context re-sent at full price`}</Text>
+            ) : null}
           </Box>
         ))}
         {chat.notice ? <Text color="warning">{chat.notice}</Text> : null}

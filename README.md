@@ -48,7 +48,8 @@ Requirements:
 ### Explain
 
 - **+** opens a chat; **x** closes the selected one and deletes its history. Several chats can be open; each keeps its own history.
-- Each question works like `/btw`: it is answered over the main session's latest request (read from the prompt cache, so it is cheap while that cache is warm), with the chat's last 20 questions and answers, in the `/brief` style (`~/.claude/skills/brief/SKILL.md` when present). Tools are refused, so a chat never acts.
+- Each question works like `/btw`: it is answered over the main session's latest request (read from the prompt cache, so it is cheap while that cache is warm), with the chat's recent questions and answers (up to 20, and about 6,000 characters, newest kept), in a condensed `/brief` style. Tools are refused, so a chat never acts.
+- Under each answer: its tokens (`in`, `cached`, `written`, `out`). When the main session's cache was cold, a warning says how many tokens of its context were re-sent at full price.
 - Answers come from the main session's model and arrive whole, not streamed.
 - `No context yet` means the main session has not sent a request yet, or was cleared.
 - `D3` in a question names that decision.
@@ -57,16 +58,16 @@ Requirements:
 
 - The main agent adds, changes and removes items with its `decisions` tool. Each has a title, a detail and zero or more options.
 - Press an item to show its detail, its options (`1.`, `2.`, …) and an answer field. Type an option number, free text, or both, and press Enter to save: `●` marks an answered item.
-- **Submit** sends every saved answer to the main agent as one prompt; sent items show `↑` until the agent updates or removes them.
+- **Submit** sends every saved answer to the main agent as one prompt (`D3: option 2. your text`: an option goes by its number, never its text); sent items show `↑` until the agent updates or removes them.
 - While the main agent is working, answering and Submit are locked; the list and details stay readable.
-- `D3` in your own prompt attaches that decision for the main agent.
+- `D3` in your own prompt attaches that decision for the main agent, marked as text the assistant wrote. `D3.js` or `AD3` is not a mention.
 
 ### Working rules for the main agent
 
 The panel adds a fixed section to the system prompt of every interactive session:
 
 - Questions that need your choice go to Decisions.
-- In the main conversation the agent gathers context and writes the plan with you; it does not implement code or write contracts itself.
+- In the main conversation the agent gathers context and writes the plan with you; it does not implement code or write contracts itself, except a small edit (about 10 lines in one file) you asked for or confirmed.
 - It asks you to confirm the plan, then assigns implementation to subagents.
 
 ### What each field means
@@ -74,7 +75,7 @@ The panel adds a fixed section to the system prompt of every interactive session
 - **Effort** is read from the main loop's model requests, so it shows `–` until the first request.
 - **ctx** is the last response's input tokens over the model's window.
 - **5h / 7d** are the percentages the API last reported, with the time left until the window resets. The API gives no token counts, so none are shown.
-- **PR / CI** come from `gh pr view`. Click the PR text to open the pull request, or the CI text to open its checks page, in your default browser (`open`, falling back to `xdg-open`; only `https://` links). A branch with no PR falls back to its latest `gh run list` result.
+- **PR / CI** come from `gh pr view`. Click the PR text to open the pull request, or the CI text to open its checks page, in your default browser (`open`, falling back to `xdg-open`; only `https://` links). CI is shown only for an open PR; a branch with no PR shows `no PR` and no CI.
 - **Subagent tasks** come from the subagent's `TodoWrite` calls: `x/y tasks`, ✓ done, ▶ doing, ○ waiting. A subagent that never calls `TodoWrite` shows only its tool count and last tool call.
 
 ## Refresh
@@ -82,9 +83,12 @@ The panel adds a fixed section to the system prompt of every interactive session
 | Data | When |
 | --- | --- |
 | Agents, model, usage | Every 2 s (local calls, no network) |
-| Git, PR, CI, repo list | When a session starts; after a `Bash` tool call whose command runs `git` or `gh` (3 s after it finishes); when you press **↻** in the GIT frame |
+| Repo list | When a session starts; when you press **↻** |
+| Git status of one repo | 3 s after a `Bash` call runs `git` or `gh` in that repo (repos outside the session folder are skipped) |
+| PR and CI of one repo | Same trigger, only for a command that can change them (`git push`, `commit`, `checkout`, `switch`, `merge`, `rebase`, `pull`, `gh pr`, `gh run`, `gh workflow`), and at most once a minute per repo |
+| Everything, every repo | When a session starts; when you press **↻** (no one-minute limit) |
 
-There is no polling for git or `gh`. The GIT frame shows how long ago it was read. Press **↻** (or `r` while the pane has focus) for a manual read, for example to see CI after a push.
+There is no polling for git or `gh`; one refresh costs one `gh pr view` per repo it reads. The GIT frame shows how long ago it was read. Press **↻** (or `r` while the pane has focus) for a manual read, for example to see CI after a push.
 
 `git` status is read locally and never runs `git fetch`, so ahead/behind reflects your last fetch.
 

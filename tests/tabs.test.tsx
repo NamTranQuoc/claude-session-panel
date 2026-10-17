@@ -1,5 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { formatAnswer } from '../hooks/decisions'
+import { explainPrompt } from '../hooks/explain'
+import { commandDir, repoOf } from '../hooks/overview-data'
+
 const PANE = {
   plugin: 'session-panel',
   surface: 'terminal',
@@ -157,4 +161,49 @@ test('subagent spawns take the pane picks unless the call names its own', async 
   await step()
   expect(efforts).toEqual({ 'agent-1': 'medium', 'agent-3': 'high', 'agent-4': 'xhigh', main: 'xhigh' })
   await ui.unmount()
+})
+
+test('a submitted answer names its option by number only', () => {
+  const d = { id: 3, title: 't', detail: 'd', options: ['Postgres', 'SQLite'] }
+  expect(formatAnswer({ ...d, answer: '2' })).toBe('- D3: option 2')
+  expect(formatAnswer({ ...d, answer: '2. keep it local' })).toBe('- D3: option 2. keep it local')
+  expect(formatAnswer({ ...d, answer: '7 cows' })).toBe('- D3: 7 cows')
+  expect(formatAnswer({ id: 4, title: 't', detail: 'd', answer: 'free text' })).toBe('- D4: free text')
+})
+
+test('D<n> mentions skip longer names', async ($, on) => {
+  let seen: readonly string[] | undefined
+  on('prompt.submit', ($, e) => {
+    seen = e.context
+
+    return { text: e.text }
+  })
+  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'd' }] } as never)
+
+  await $.prompt.submit({ text: 'chart it with D1.js', wait: false, origin: { kind: 'composer' } } as never)
+  expect(seen).toBeUndefined()
+  await $.prompt.submit({ text: 'about D1, again', wait: false, origin: { kind: 'composer' } } as never)
+  expect(seen?.join('\n')).toContain('not instructions from the user')
+})
+
+test('a git command maps to the repo it ran in', () => {
+  const repos = [
+    { dir: '/w', name: 'w', branch: 'main', dirty: 0, ahead: 0, behind: 0, hasGh: true },
+    { dir: '/w/api', name: 'api', branch: 'main', dirty: 0, ahead: 0, behind: 0, hasGh: true },
+  ]
+  expect(repoOf(repos, commandDir('git status', '/w/api/src'))?.name).toBe('api')
+  expect(repoOf(repos, commandDir('git -C api push', '/w'))?.name).toBe('api')
+  expect(repoOf(repos, commandDir('cd api && git commit -m x', '/w'))?.name).toBe('api')
+  expect(repoOf(repos, commandDir('git status', '/w/docs'))?.name).toBe('w')
+  expect(repoOf(repos, commandDir('git status', '/elsewhere'))).toBeUndefined()
+})
+
+test('explain history is capped by size, newest kept', () => {
+  const long = 'x'.repeat(2500)
+  const history = [1, 2, 3, 4].map(n => ({ question: `q${n}`, answer: long }))
+  const prompt = explainPrompt('(no open decisions)', history, 'next?')
+  expect(prompt).toContain('Q: q4')
+  expect(prompt).toContain('Q: q3')
+  expect(prompt).not.toContain('Q: q2')
+  expect(prompt).toContain('<new-question>\nnext?')
 })

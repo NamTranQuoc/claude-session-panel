@@ -2,7 +2,10 @@
 
 export type SessionPanelTab = 'overview' | 'explain' | 'decisions'
 
-export type SessionPanelTurn = { question: string; answer: string }
+// What one answer cost, as the API counted it.
+export type SessionPanelUsage = { input: number; cacheRead: number; cacheWrite: number; output: number }
+
+export type SessionPanelTurn = { question: string; answer: string; usage?: SessionPanelUsage }
 
 export type SessionPanelChat = {
   id: number

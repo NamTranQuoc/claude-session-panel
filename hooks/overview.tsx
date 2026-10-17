@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { ConfigRow, On, RenderChildren, SessionUsage } from 'claude-code'
 
-import { EFFORTS, fit, INHERIT, live, MODELS, PANE } from './shared'
 import type { SessionPanelTab } from '../types'
+import { ago, bar, clock, commandDir, level, parseCi, repoOf, TERMINAL, toolSummary, until } from './overview-data'
+import type { AgentView, Picker, Repo, Todo } from './overview-data'
+import { EFFORTS, fit, INHERIT, live, MODELS, PANE } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const agentModel = atom({ plugin: 'session-panel', key: 'agentModel' } as const, 'inherit')
@@ -10,94 +12,11 @@ const agentEffort = atom({ plugin: 'session-panel', key: 'agentEffort' } as cons
 
 const FAST_MS = 2000
 const GIT_CMD = /(^|[\s;&|(])(git|gh)\s/
+// Commands that can change what GitHub shows for the branch: its PR and checks.
+const REMOTE_CMD = /(^|[\s;&|(])(git\s+(-C\s+\S+\s+)?(push|commit|checkout|switch|merge|rebase|pull)\b|gh\s+(pr|run|workflow)\b)/
+const GH_GAP_MS = 60000
 const MAX_REPOS = 12
 const MAX_AGENTS = 8
-
-type Ci = { state: 'pass' | 'fail' | 'pending'; done: number; total: number; url?: string }
-type Pr = { number: number; title: string; state: string; isDraft: boolean; review?: string; url?: string }
-type Repo = {
-  dir: string
-  name: string
-  branch: string
-  dirty: number
-  ahead: number
-  behind: number
-  pr?: Pr
-  ci?: Ci
-  hasGh: boolean
-}
-type Todo = { content: string; status: string; activeForm?: string }
-type AgentView = {
-  id: string
-  label: string
-  type: string
-  status: string
-  startedAt: number
-  endedAt?: number
-  tools: number
-  lastTool: string
-  todos: Todo[]
-}
-type Picker = 'model' | 'effort' | 'agentModel' | 'agentEffort'
-
-const TERMINAL = new Set(['completed', 'failed', 'killed'])
-
-const bar = (percent: number, width: number) => {
-  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)))
-
-  return '█'.repeat(filled) + '░'.repeat(width - filled)
-}
-
-const level = (percent: number) =>
-  percent >= 85 ? 'error' : percent >= 65 ? 'warning' : 'success'
-
-const clock = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000))
-
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
-}
-
-const until = (iso: string | undefined, now: number) => {
-  if (!iso) return ''
-  const mins = Math.max(0, Math.round((Date.parse(iso) - now) / 60000))
-  if (mins >= 1440) return `${Math.floor(mins / 1440)}d${Math.floor((mins % 1440) / 60)}h`
-  if (mins >= 60) return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`
-
-  return `${mins}m`
-}
-
-const ago = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000))
-
-  return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`
-}
-
-const toolSummary = (e: Record<string, unknown>) => {
-  const pick = e.file_path ?? e.command ?? e.pattern ?? e.query ?? e.url ?? e.description ?? ''
-
-  return `${String(e.tool)} ${String(pick).replace(/\s+/g, ' ')}`.trim()
-}
-
-const parseCi = (items: unknown): Ci | undefined => {
-  if (!Array.isArray(items) || items.length === 0) return undefined
-  let fail = 0
-  let pending = 0
-  let done = 0
-  for (const item of items as Record<string, string>[]) {
-    const verdict = item.conclusion || item.state || ''
-    const isRunning = item.status !== undefined && item.status !== 'COMPLETED'
-    if (isRunning || verdict === 'PENDING' || verdict === 'EXPECTED') {
-      pending += 1
-    } else if (['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(verdict)) {
-      fail += 1
-      done += 1
-    } else {
-      done += 1
-    }
-  }
-
-  return { state: fail ? 'fail' : pending ? 'pending' : 'pass', done, total: items.length }
-}
 
 // The Overview tab: MODEL, GIT and SUBAGENTS frames, and the data behind them.
 export const registerOverview = (on: On) => {
@@ -108,6 +27,9 @@ export const registerOverview = (on: On) => {
   let isRefreshing = false
   let gitAt = 0
   let refreshAll: (() => void) | undefined
+  let refreshRepo: (() => void) | undefined
+  // Repos a git/gh call touched since the last auto refresh, and whether it asks for gh.
+  const pending = new Map<string, boolean>()
   let commands = new Set<string>()
   const settings = new Map<'model' | 'effort', ConfigRow>()
   let openPicker: Picker | undefined
@@ -134,8 +56,6 @@ export const registerOverview = (on: On) => {
       else if (/effort/i.test(row.key) || /effort/i.test(row.label)) settings.set('effort', row)
     }
 
-    let busyGit = false
-    let busyGh = false
     // Pinned at start: the session's directory follows every `cd` the Bash tool runs.
     const root = await $.session.cwd()
 
@@ -158,11 +78,6 @@ export const registerOverview = (on: On) => {
         }
       }
       while (agents.size > 20) agents.delete(agents.keys().next().value as string)
-    }
-
-    const refreshUsage = async () => {
-      live.model = await $.session.model()
-      usage = await $.session.usage()
     }
 
     const scan = async () => {
@@ -191,60 +106,35 @@ export const registerOverview = (on: On) => {
       )
     }
 
-    const refreshGit = async () => {
-      if (busyGit) return
-      busyGit = true
-      try {
-        for (const repo of repos) {
-          const out = await $.process.run(['git', '-C', repo.dir, 'status', '--porcelain=v1', '-b'], { timeoutMs: 10000 })
-          if (out.exitCode !== 0) continue
-          const lines = out.stdout.split('\n').filter(Boolean)
-          const head = (lines[0] ?? '').replace(/^## /, '')
-          repo.dirty = Math.max(0, lines.length - 1)
-          repo.ahead = Number(/ahead (\d+)/.exec(head)?.[1] ?? 0)
-          repo.behind = Number(/behind (\d+)/.exec(head)?.[1] ?? 0)
-          repo.branch = head.replace(/^No commits yet on /, '').split('...')[0]?.split(' ')[0] || head
-        }
-      } finally {
-        busyGit = false
-      }
+    const readGit = async (repo: Repo) => {
+      const out = await $.process.run(['git', '-C', repo.dir, 'status', '--porcelain=v1', '-b'], { timeoutMs: 10000 })
+      if (out.exitCode !== 0) return
+      const lines = out.stdout.split('\n').filter(Boolean)
+      const head = (lines[0] ?? '').replace(/^## /, '')
+      repo.dirty = Math.max(0, lines.length - 1)
+      repo.ahead = Number(/ahead (\d+)/.exec(head)?.[1] ?? 0)
+      repo.behind = Number(/behind (\d+)/.exec(head)?.[1] ?? 0)
+      repo.branch = head.replace(/^No commits yet on /, '').split('...')[0]?.split(' ')[0] || head
     }
 
-    const refreshGh = async () => {
-      if (busyGh) return
-      busyGh = true
-      try {
-        for (const repo of repos) {
-          const prRun = await $.process.run(
-            ['gh', 'pr', 'view', '--json', 'number,title,state,isDraft,reviewDecision,statusCheckRollup,url'],
-            { cwd: repo.dir, timeoutMs: 20000 },
-          ).catch(() => undefined)
-          if (prRun && prRun.exitCode === 0) {
-            const j = JSON.parse(prRun.stdout) as Record<string, any>
-            repo.pr = { number: j.number, title: j.title, state: j.state, isDraft: !!j.isDraft, review: j.reviewDecision || undefined, url: j.url }
-            repo.ci = parseCi(j.statusCheckRollup)
-            if (repo.ci && j.url) repo.ci.url = `${j.url}/checks`
-            repo.hasGh = true
-            continue
-          }
-          repo.pr = undefined
-          const runs = await $.process.run(
-            ['gh', 'run', 'list', '--branch', repo.branch, '--limit', '1', '--json', 'status,conclusion,url'],
-            { cwd: repo.dir, timeoutMs: 20000 },
-          ).catch(() => undefined)
-          if (runs && runs.exitCode === 0) {
-            const r = (JSON.parse(runs.stdout) as Record<string, string>[])[0]
-            repo.ci = r
-              ? { state: r.status !== 'completed' ? 'pending' : r.conclusion === 'success' ? 'pass' : 'fail', done: 1, total: 1, url: r.url }
-              : undefined
-          } else {
-            repo.ci = undefined
-            repo.hasGh = false
-          }
-        }
-      } finally {
-        busyGh = false
+    // One `gh pr view` per repo; its checks come in the same call, so a branch with no open PR costs nothing more.
+    const readGh = async (repo: Repo) => {
+      repo.ghAt = await $.clock.now()
+      const ran = await $.process.run(
+        ['gh', 'pr', 'view', '--json', 'number,title,state,isDraft,reviewDecision,statusCheckRollup,url'],
+        { cwd: repo.dir, timeoutMs: 20000 },
+      ).catch(() => undefined)
+      if (!ran || ran.exitCode !== 0) {
+        repo.pr = undefined
+        repo.ci = undefined
+        repo.hasGh = !!ran && /no (open )?pull requests? found/i.test(ran.stderr)
+        return
       }
+      const j = JSON.parse(ran.stdout) as Record<string, any>
+      repo.hasGh = true
+      repo.pr = { number: j.number, title: j.title, state: j.state, isDraft: !!j.isDraft, review: j.reviewDecision || undefined, url: j.url }
+      repo.ci = j.state === 'OPEN' ? parseCi(j.statusCheckRollup) : undefined
+      if (repo.ci && j.url) repo.ci.url = `${j.url}/checks`
     }
 
     const safe = (fn: () => Promise<void>) => () => {
@@ -253,27 +143,55 @@ export const registerOverview = (on: On) => {
       })
     }
 
-    const fast = safe(async () => {
-      await refreshAgents()
-      await refreshUsage()
-    })
+    // Agents and usage every 2 s (local calls). The pane redraws when they change, while a subagent
+    // runs (its clock ticks) or every 30 s for the "ago" labels, and only while Overview shows.
+    let lastSeen = ''
+    let tick = 0
+    const fast = async () => {
+      try {
+        await refreshAgents()
+        live.model = await $.session.model()
+        usage = await $.session.usage()
+        const seen = JSON.stringify([live.model, usage, [...agents.values()]])
+        const isTicking = [...agents.values()].some(a => a.endedAt === undefined)
+        tick += 1
+        if ((seen !== lastSeen || isTicking || tick % 15 === 0) && (await read($, tab)) === 'overview') $.ui.invalidate('ui.render')
+        lastSeen = seen
+      } catch (err) {
+        $.ui.log(`session-panel: ${String(err)}`, { to: 'debug' })
+      }
+    }
+
+    // Session start and the ↻ button: rescan the folder, then every repo's git and gh.
     refreshAll = safe(async () => {
       if (isRefreshing) return
       isRefreshing = true
       $.ui.invalidate('ui.render')
       try {
         await scan()
-        await refreshGit()
-        await refreshGh()
+        for (const repo of repos) await readGit(repo)
+        for (const repo of repos) await readGh(repo)
         gitAt = await $.clock.now()
       } finally {
         isRefreshing = false
       }
     })
+    refreshRepo = safe(async () => {
+      const due = [...pending]
+      pending.clear()
+      const now = await $.clock.now()
+      for (const [dir, wantsGh] of due) {
+        const repo = repos.find(r => r.dir === dir)
+        if (!repo) continue
+        await readGit(repo)
+        if (wantsGh && now - (repo.ghAt ?? 0) >= GH_GAP_MS) await readGh(repo)
+      }
+      gitAt = now
+    })
 
     refreshAll()
-    fast()
-    timers.push($.clock.every(FAST_MS, fast))
+    void fast()
+    timers.push($.clock.every(FAST_MS, () => void fast()))
 
     return next(e)
   })
@@ -289,11 +207,19 @@ export const registerOverview = (on: On) => {
         one.lastTool = toolSummary(raw)
       }
     }
+    const command = e.tool === 'Bash' ? String((e as unknown as Record<string, unknown>).command ?? '') : ''
+    // Read before the call: a `cd` in the command moves the session's directory.
+    const cwd = command && GIT_CMD.test(command) ? await $.session.cwd() : ''
     const ran = await next(e)
-    // A `git` or `gh` Bash call refreshes the GIT frame 3 s after the last one.
-    if (e.tool === 'Bash' && GIT_CMD.test(String((e as unknown as Record<string, unknown>).command ?? ''))) {
-      debounce?.cancel()
-      debounce = $.clock.after(3000, () => refreshAll?.())
+    // A `git` or `gh` call refreshes its own repo 3 s after the last one; gh only after a command that can
+    // change what GitHub shows, at most once a minute per repo. Repos outside the session folder are skipped.
+    if (cwd) {
+      const repo = repoOf(repos, commandDir(command, cwd))
+      if (repo) {
+        pending.set(repo.dir, (pending.get(repo.dir) ?? false) || REMOTE_CMD.test(command))
+        debounce?.cancel()
+        debounce = $.clock.after(3000, () => refreshRepo?.())
+      }
     }
 
     return ran
