@@ -61,10 +61,13 @@ export const ago = (ms: number) => {
   return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`
 }
 
+// Secrets a command line may carry, masked before the pane shows it.
+const SECRET = /(\b(?:bearer|basic)\s+|\b[\w-]*(?:token|secret|password|passwd|api[_-]?key)[\w-]*["']?\s*[=:]\s*["']?)[^\s"'&]+/gi
+
 export const toolSummary = (e: Record<string, unknown>) => {
   const pick = e.file_path ?? e.command ?? e.pattern ?? e.query ?? e.url ?? e.description ?? ''
 
-  return `${String(e.tool)} ${String(pick).replace(/\s+/g, ' ')}`.trim()
+  return `${String(e.tool)} ${String(pick).replace(/\s+/g, ' ').replace(SECRET, '$1***')}`.trim()
 }
 
 export const parseCi = (items: unknown): Ci | undefined => {

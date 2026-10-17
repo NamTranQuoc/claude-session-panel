@@ -80,6 +80,9 @@ const isReady = (d: SessionPanelDecision) => Boolean(d.answer?.trim()) && d.sent
 // The Decisions tab, the `decisions` tool the main agent keeps the list with, and D<n> mentions.
 export const registerDecisions = (on: On) => {
   on('tool.call', { tool: TOOL_NAME }, async ($, e) => {
+    // The list is the user's conversation with the main agent; a subagent's text would reach the
+    // main agent's user turns through D<n> mentions without the main agent having written it.
+    if (e.agentId !== undefined) return { deny: 'Only the main conversation keeps the decisions list.' }
     const input = e as unknown as DecisionsInput
     const applied = applyDecisions(await read($, decisions), await read($, nextDecisionId), input)
     await update($, nextDecisionId, () => applied.nextId)
@@ -90,9 +93,10 @@ export const registerDecisions = (on: On) => {
     return { result: listDecisions(applied.list) }
   })
 
-  // A prompt naming D<n> carries those items, so the main agent reads what the user points at.
+  // A prompt naming D<n> carries those items, so the main agent reads what the user points at. The
+  // panel's own Submit is skipped: it names every answered item, whose text the agent already has.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command) return next(e)
+    if (e.command || (e.origin.kind === 'plugin' && e.origin.name === PLUGIN)) return next(e)
     const ids = new Set([...e.text.matchAll(MENTION)].map(m => Number(m[1])))
     const named = ids.size === 0 ? [] : (await read($, decisions)).filter(d => ids.has(d.id))
     if (named.length === 0) return next(e)

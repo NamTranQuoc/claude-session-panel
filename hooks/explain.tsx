@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { SessionPanelChat, SessionPanelDecision, SessionPanelTab } from '../types'
-import { fit, listDecisions, PANE } from './shared'
+import { fit, listDecisions, live, PANE } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const chats = atom({ plugin: 'session-panel', key: 'chats' } as const, [] as SessionPanelChat[])
@@ -15,6 +15,8 @@ const MAX_TURNS = 20
 const MAX_HISTORY_CHARS = 6000
 // A reply that wrote this many prompt tokens to the cache re-sent the main context at full price.
 const COLD_CACHE_TOKENS = 20000
+// The API's default prompt-cache lifetime; idle longer, the main context is likely billed afresh.
+const CACHE_TTL_MS = 5 * 60 * 1000
 
 // The /brief rules that shape an answer, condensed.
 const BRIEF = `- Same language as the question; technical terms and names stay in English.
@@ -71,10 +73,25 @@ export const registerExplain = (on: On) => {
     const ask = async (id: number, question: string) => {
       const current = (await read($, chats)).find(one => one.id === id)
       if (!current || current.isAsking || !question.trim()) return
-      await patch(id, one => ({ ...one, draft: '', isAsking: true, notice: undefined }))
+      // Warn before a fork the cold cache would bill at full price; asking again sends it.
+      const now = await $.clock.now()
+      const idle = now - live.mainAt
+      if (live.mainAt > 0 && !live.isMainRunning && idle >= CACHE_TTL_MS && !current.isColdWarned) {
+        const { context } = await $.session.usage()
+        await patch(id, one => ({
+          ...one,
+          draft: question,
+          isColdWarned: true,
+          notice: `Main session idle ${Math.round(idle / 60000)}m: its prompt cache has likely expired, so this question re-sends about ${tokens(context.tokens ?? 0)} tokens of context at full price. Ask again to send it.`,
+        }))
+        return
+      }
+      await patch(id, one => ({ ...one, draft: '', isAsking: true, notice: undefined, isColdWarned: false }))
       const prompt = explainPrompt(listDecisions(await read($, decisions)), current.history, question)
 
       const reply = await $.model.fork({ prompt }).catch(err => ({ isAnswered: false as const, reason: 'thrown' as const, err }))
+      // The fork read the main prefix, which renews its cache entry.
+      if (reply.isAnswered) live.mainAt = await $.clock.now()
       const notice = reply.isAnswered
         ? undefined
         : reply.reason === 'nothing-to-fork'

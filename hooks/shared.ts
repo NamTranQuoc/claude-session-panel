@@ -13,8 +13,10 @@ export const live = {
   model: '',
   effort: '',
   isMainRunning: false,
-  // True while a pane pick switches the model.
-  isSwitching: false,
+  // When the main loop's last request ended, or a fork last read its cache; 0 until one has.
+  mainAt: 0,
+  // The model a pane pick is switching to, until the switch asks; '' otherwise.
+  switchTo: '',
 }
 
 export const fit = (text: string, width: number) =>

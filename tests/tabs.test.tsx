@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { formatAnswer } from '../hooks/decisions'
 import { explainPrompt } from '../hooks/explain'
-import { commandDir, repoOf } from '../hooks/overview-data'
+import { commandDir, repoOf, toolSummary } from '../hooks/overview-data'
 
 const PANE = {
   plugin: 'session-panel',
@@ -109,12 +109,16 @@ test('the system prompt carries the panel rules, the same text each time', async
   const first = await $.prompt.compose(input)
   const second = await $.prompt.compose(input)
   const rules = first.sections.find(s => s.id === 'session-panel:rules')
-  expect(rules?.text).toContain('Plan mode')
+  expect(rules?.text).toContain('Delegation')
   expect(second.sections.find(s => s.id === 'session-panel:rules')?.text).toBe(rules?.text)
+
+  const headless = await $.prompt.compose({ ...(input as object), traits: ['print'] } as never)
+  expect(headless.sections.find(s => s.id === 'session-panel:rules')).toBeUndefined()
 })
 
 test('subagent spawns take the pane picks unless the call names its own', async ($, on) => {
   mock.clock(on)
+  mock.store(on)
   const spawned: { model?: string; prompt: string }[] = []
   on('agent.spawn', ($, e) => {
     spawned.push({ model: e.model, prompt: e.prompt })
@@ -186,6 +190,14 @@ test('D<n> mentions skip longer names', async ($, on) => {
   expect(seen?.join('\n')).toContain('not instructions from the user')
 })
 
+test('a subagent cannot change the decisions list', async ($, on) => {
+  mock.clock(on)
+  const denied = await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', agentId: 'agent-1', upsert: [{ title: 'x', detail: 'y' }] } as never)
+  expect(JSON.stringify(denied)).toContain('Only the main conversation')
+  const listed = await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-2' } as never)
+  expect(JSON.stringify(listed)).toContain('no open decisions')
+})
+
 test('a git command maps to the repo it ran in', () => {
   const repos = [
     { dir: '/w', name: 'w', branch: 'main', dirty: 0, ahead: 0, behind: 0, hasGh: true },
@@ -206,4 +218,23 @@ test('explain history is capped by size, newest kept', () => {
   expect(prompt).toContain('Q: q3')
   expect(prompt).not.toContain('Q: q2')
   expect(prompt).toContain('<new-question>\nnext?')
+})
+
+test('the subagent picks carry over to a new session', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, { agentModel: 'haiku', agentEffort: 'low' })
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: false } as never).catch(() => undefined)
+
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^haiku/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^low/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the pane masks secrets in a subagent command', () => {
+  const shown = toolSummary({ tool: 'Bash', command: 'curl -H "Authorization: Bearer abc.def" "https://x?api_key=k1&q=1" GITHUB_TOKEN=ghp_1 ls' })
+  expect(shown).not.toContain('abc.def')
+  expect(shown).not.toContain('k1')
+  expect(shown).not.toContain('ghp_1')
+  expect(shown).toContain('q=1')
 })

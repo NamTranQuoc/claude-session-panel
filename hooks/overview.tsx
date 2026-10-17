@@ -12,8 +12,9 @@ const agentEffort = atom({ plugin: 'session-panel', key: 'agentEffort' } as cons
 
 const FAST_MS = 2000
 const GIT_CMD = /(^|[\s;&|(])(git|gh)\s/
-// Commands that can change what GitHub shows for the branch: its PR and checks.
-const REMOTE_CMD = /(^|[\s;&|(])(git\s+(-C\s+\S+\s+)?(push|commit|checkout|switch|merge|rebase|pull)\b|gh\s+(pr|run|workflow)\b)/
+// Commands that can change what GitHub shows for the branch: its PR and checks. A push or a branch
+// change, or a gh call that writes; local commits and gh reads do not.
+const REMOTE_CMD = /(^|[\s;&|(])(git\s+(-C\s+\S+\s+)?(push|checkout|switch)\b|gh\s+(pr\s+(create|merge|close|reopen|ready|edit|checkout)|run\s+rerun|workflow\s+run)\b)/
 const GH_GAP_MS = 60000
 const MAX_REPOS = 12
 const MAX_AGENTS = 8
@@ -25,6 +26,8 @@ export const registerOverview = (on: On) => {
   const timers: { cancel: () => void }[] = []
   let usage: SessionUsage | undefined
   let isRefreshing = false
+  // The session started in the home folder or `/`: no scan there.
+  let isScanSkipped = false
   let gitAt = 0
   let refreshAll: (() => void) | undefined
   let refreshRepo: (() => void) | undefined
@@ -45,7 +48,8 @@ export const registerOverview = (on: On) => {
     return one
   }
 
-  on('session.start', async ($, e, next) => {
+  // Interactive sessions only: a `-p` or SDK run draws no pane, so it reads no git or gh.
+  on('session.start', { isInteractive: true }, async ($, e, next) => {
     for (const t of timers.splice(0)) t.cancel()
     debounce?.cancel()
     commands = new Set((await $.command.list()).map(c => c.name))
@@ -58,6 +62,8 @@ export const registerOverview = (on: On) => {
 
     // Pinned at start: the session's directory follows every `cd` the Bash tool runs.
     const root = await $.session.cwd()
+    const home = await $.env.get('HOME')
+    isScanSkipped = root === '/' || root === home
 
     const refreshAgents = async () => {
       const now = await $.clock.now()
@@ -80,11 +86,13 @@ export const registerOverview = (on: On) => {
       while (agents.size > 20) agents.delete(agents.keys().next().value as string)
     }
 
+    // The session folder and its direct children.
     const scan = async () => {
-      const found = await $.process.run(
-        ['find', root, '-maxdepth', '3', '-name', '.git', '-not', '-path', '*/node_modules/*'],
-        { timeoutMs: 15000 },
-      )
+      if (isScanSkipped) {
+        repos = []
+        return
+      }
+      const found = await $.process.run(['find', root, '-maxdepth', '2', '-name', '.git'], { timeoutMs: 15000 })
       const dirs = found.stdout
         .split('\n')
         .filter(Boolean)
@@ -130,7 +138,14 @@ export const registerOverview = (on: On) => {
         repo.hasGh = !!ran && /no (open )?pull requests? found/i.test(ran.stderr)
         return
       }
-      const j = JSON.parse(ran.stdout) as Record<string, any>
+      let j: Record<string, any>
+      try {
+        j = JSON.parse(ran.stdout) as Record<string, any>
+      } catch {
+        repo.pr = undefined
+        repo.ci = undefined
+        return
+      }
       repo.hasGh = true
       repo.pr = { number: j.number, title: j.title, state: j.state, isDraft: !!j.isDraft, review: j.reviewDecision || undefined, url: j.url }
       repo.ci = j.state === 'OPEN' ? parseCi(j.statusCheckRollup) : undefined
@@ -143,19 +158,24 @@ export const registerOverview = (on: On) => {
       })
     }
 
-    // Agents and usage every 2 s (local calls). The pane redraws when they change, while a subagent
-    // runs (its clock ticks) or every 30 s for the "ago" labels, and only while Overview shows.
+    // Agents and usage every 2 s (local calls), only while Overview shows; hidden, agents alone while
+    // one runs, so its end time stays right. The pane redraws when they change, while a subagent runs
+    // (its clock ticks) or every 30 s for the "ago" labels.
     let lastSeen = ''
     let tick = 0
     const fast = async () => {
       try {
+        const isShown = (await read($, tab)) === 'overview' && (await $.ui.panes()).some(p => p.id === PANE)
+        const isRunning = [...agents.values()].some(a => a.endedAt === undefined)
+        if (!isShown && !isRunning) return
         await refreshAgents()
+        if (!isShown) return
         live.model = await $.session.model()
         usage = await $.session.usage()
         const seen = JSON.stringify([live.model, usage, [...agents.values()]])
         const isTicking = [...agents.values()].some(a => a.endedAt === undefined)
         tick += 1
-        if ((seen !== lastSeen || isTicking || tick % 15 === 0) && (await read($, tab)) === 'overview') $.ui.invalidate('ui.render')
+        if (seen !== lastSeen || isTicking || tick % 15 === 0) $.ui.invalidate('ui.render')
         lastSeen = seen
       } catch (err) {
         $.ui.log(`session-panel: ${String(err)}`, { to: 'debug' })
@@ -169,8 +189,12 @@ export const registerOverview = (on: On) => {
       $.ui.invalidate('ui.render')
       try {
         await scan()
-        for (const repo of repos) await readGit(repo)
-        for (const repo of repos) await readGh(repo)
+        // One repo that fails does not stop the rest.
+        const each = async (fn: (repo: Repo) => Promise<void>) => {
+          for (const repo of repos) await fn(repo).catch(err => $.ui.log(`session-panel: ${repo.dir}: ${String(err)}`, { to: 'debug' }))
+        }
+        await each(readGit)
+        await each(readGh)
         gitAt = await $.clock.now()
       } finally {
         isRefreshing = false
@@ -184,7 +208,8 @@ export const registerOverview = (on: On) => {
         const repo = repos.find(r => r.dir === dir)
         if (!repo) continue
         await readGit(repo)
-        if (wantsGh && now - (repo.ghAt ?? 0) >= GH_GAP_MS) await readGh(repo)
+        // A repo gh could not read waits for ↻.
+        if (wantsGh && repo.hasGh && now - (repo.ghAt ?? 0) >= GH_GAP_MS) await readGh(repo)
       }
       gitAt = now
     })
@@ -225,11 +250,15 @@ export const registerOverview = (on: On) => {
     return ran
   })
 
-  // A model switch started from the pane is the person's own pick: it skips the cache-loss prompt.
+  // A model switch started from the pane is the person's own pick: it skips the cache-loss prompt,
+  // once, and only for the model picked there.
   on('classic.PreModelSwitch', async ($, e, next) => {
     const result = await next(e)
+    const to = live.switchTo
+    if (!to || ![e.requested_model, e.to_model].some(m => m?.toLowerCase().includes(to))) return result
+    live.switchTo = ''
 
-    return live.isSwitching ? { ...result, permissionDecision: 'allow' as const } : result
+    return { ...result, permissionDecision: 'allow' as const }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
@@ -289,7 +318,7 @@ export const registerOverview = (on: On) => {
     }
 
     const gitRows = repos.length === 0
-      ? [<Text dimColor>no git repository under the session folder</Text>]
+      ? [<Text dimColor>{isScanSkipped ? 'home folder or / : not scanned' : 'no git repository under the session folder'}</Text>]
       : repos.map(r => {
           const ciColor = r.ci?.state === 'pass' ? 'success' : r.ci?.state === 'fail' ? 'error' : 'warning'
           const ciIcon = r.ci?.state === 'pass' ? '✓' : r.ci?.state === 'fail' ? '✗' : '●'
@@ -337,8 +366,14 @@ export const registerOverview = (on: On) => {
         <Text dimColor>{'   effort '}</Text>
         {dropdown('agentEffort', subEffort, true)}
       </Box>,
-      options('agentModel', [INHERIT, ...MODELS], arg => subModel === arg, arg => void update($, agentModel, () => arg)),
-      options('agentEffort', [INHERIT, ...EFFORTS], arg => subEffort === arg, arg => void update($, agentEffort, () => arg)),
+      options('agentModel', [INHERIT, ...MODELS], arg => subModel === arg, arg => {
+        void update($, agentModel, () => arg)
+        void $.store.set('agentModel', arg)
+      }),
+      options('agentEffort', [INHERIT, ...EFFORTS], arg => subEffort === arg, arg => {
+        void update($, agentEffort, () => arg)
+        void $.store.set('agentEffort', arg)
+      }),
     ]
     const agentRows = all.length === 0
       ? [<Text dimColor>no subagents yet</Text>]
@@ -392,7 +427,7 @@ export const registerOverview = (on: On) => {
     // The /config row applies at once, mid-turn included; the slash command waits for idle.
     const apply = async (command: 'model' | 'effort', arg: string) => {
       const row = settings.get(command)
-      live.isSwitching = true
+      if (command === 'model') live.switchTo = arg
       try {
         if (row) {
           const value = row.options?.find(o => o.toLowerCase() === arg) ?? row.options?.find(o => o.toLowerCase().includes(arg)) ?? arg
@@ -407,7 +442,7 @@ export const registerOverview = (on: On) => {
       } catch (err) {
         $.ui.toast(`${command} ${arg} failed: ${String(err)}`)
       } finally {
-        live.isSwitching = false
+        live.switchTo = ''
       }
       live.model = await $.session.model()
       $.ui.invalidate('ui.render')

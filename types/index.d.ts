@@ -14,6 +14,8 @@ export type SessionPanelChat = {
   draft: string
   isAsking: boolean
   notice?: string
+  // The cold-cache warning was shown; the next ask goes through.
+  isColdWarned?: boolean
 }
 
 export type SessionPanelDecision = {
