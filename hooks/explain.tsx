@@ -1,14 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
-import type { SessionPanelChat, SessionPanelDecision, SessionPanelTab } from '../types'
-import { fit, listDecisions, live, PANE, tokens } from './shared'
+import type { SessionPanelChat, SessionPanelDecision, SessionPanelSpending, SessionPanelTab } from '../types'
+import { fit, listDecisions, live, NO_SPENDING, PANE, tokens, withSpend } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const chats = atom({ plugin: 'session-panel', key: 'chats' } as const, [] as SessionPanelChat[])
 const chatId = atom({ plugin: 'session-panel', key: 'chatId' } as const, 0)
 const nextChatId = atom({ plugin: 'session-panel', key: 'nextChatId' } as const, 1)
 const decisions = atom({ plugin: 'session-panel', key: 'decisions' } as const, [] as SessionPanelDecision[])
+const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
 
 const MAX_TURNS = 20
 // History sent with a question, newest first, up to this many characters.
@@ -90,6 +91,11 @@ export const registerExplain = (on: On) => {
       const reply = await $.model.fork({ prompt }).catch(err => ({ isAnswered: false as const, reason: 'thrown' as const, err }))
       // The fork read the main prefix, which renews its cache entry.
       if (reply.isAnswered) live.mainAt = await $.clock.now()
+      // A fork runs on the main session's model.
+      if ('usage' in reply && reply.usage) {
+        const used = reply.usage
+        await update($, spend, s => withSpend(s, 'explain', used, live.model))
+      }
       const notice = reply.isAnswered
         ? undefined
         : reply.reason === 'nothing-to-fork'

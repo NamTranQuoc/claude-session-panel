@@ -1,13 +1,13 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { SessionPanelChat, SessionPanelDecision, SessionPanelNote, SessionPanelTab } from '../types'
+import type { SessionPanelChat, SessionPanelDecision, SessionPanelNote, SessionPanelSpending, SessionPanelTab } from '../types'
 import { DESCRIPTION, INPUT_SCHEMA, registerDecisions, TOOL } from './decisions'
 import { registerExplain } from './explain'
 import { knowLive, registerKnow } from './know'
 import { checkOutcome, IGNORED_AFTER_PROMPTS, isCheckStep, KEPT_LINES, knowPrompt, MAX_OPEN_NOTES, skipsAfter } from './know-prompt'
 import { registerOverview } from './overview'
-import { count, live, PANE, strings } from './shared'
+import { count, live, NO_SPENDING, PANE, strings, withSpend } from './shared'
 import { effortOf, endSubagent, registerSubagents } from './subagents'
 import { RULES, SECTION_ID, takesRules } from './system'
 
@@ -17,6 +17,7 @@ const decisions = atom({ plugin: 'session-panel', key: 'decisions' } as const, [
 const notes = atom({ plugin: 'session-panel', key: 'notes' } as const, [] as SessionPanelNote[])
 const nextNoteId = atom({ plugin: 'session-panel', key: 'nextNoteId' } as const, 1)
 const isKnowOn = atom({ plugin: 'session-panel', key: 'isKnowOn' } as const, false)
+const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
 
 const PANE_OPEN = { id: PANE, title: 'Session', columns: 56 }
 
@@ -119,13 +120,17 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Every model request: a subagent's runs at its recorded effort; the main loop's records its model and
-  // effort, and on its 6th, 12th, … step of a turn starts a Know check beside the request.
+  // Every model request: its usage counts toward the session's spend; a subagent's runs at its recorded
+  // effort; the main loop's records its model and effort, and on its 6th, 12th, … step of a turn starts a
+  // Know check beside the request.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
       const level = effortOf(e.agentId)
+      const done = yield* next(level ? { ...e, effort: level } : e)
+      const used = done.usage
+      if (used) await update($, spend, s => withSpend(s, 'session', used, used.model))
 
-      return yield* next(level ? { ...e, effort: level } : e)
+      return done
     }
     live.model = e.model
     live.effort = e.effort === undefined ? '' : String(e.effort)
@@ -146,6 +151,11 @@ export const register: Register = on => {
       knowLive.last = { outcome: 'checking…' }
       $.ui.invalidate('ui.render')
       const reply = await $.model.fork({ prompt: knowPrompt(seen, known, open) }).catch(() => undefined)
+      // A fork runs on the main session's model.
+      if (reply && 'usage' in reply && reply.usage) {
+        const used = reply.usage
+        await update($, spend, s => withSpend(s, 'knowCheck', used, live.model))
+      }
       const usage =
         reply && 'usage' in reply && reply.usage
           ? { input: reply.usage.input_tokens, cacheRead: reply.usage.cache_read_input_tokens, cacheWrite: reply.usage.cache_creation_input_tokens, output: reply.usage.output_tokens }
@@ -182,6 +192,8 @@ export const register: Register = on => {
 
     const done = yield* next(e)
     live.mainAt = await $.clock.now()
+    const used = done.usage
+    if (used) await update($, spend, s => withSpend(s, 'session', used, used.model))
 
     return done
   })

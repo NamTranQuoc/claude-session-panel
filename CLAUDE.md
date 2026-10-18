@@ -17,7 +17,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
 - `hooks/shared.ts` — constants, `live` (what hooks learn as the session runs), text helpers.
 - `types/index.d.ts` — the `$.state` contract (`PluginState['session-panel']`) and its value types.
 - `.claude-plugin/plugin.json` — manifest. `marketplace.json` — makes this repo installable.
-- `tests/` — `panel.test.tsx` (the Overview frames), `tabs.test.tsx` (tabs, chats, decisions, rules, subagent picks), `know.test.tsx` (parser, outcomes, gate, backoff, notes, explanations, Submit, the saved on/off pick).
+- `tests/` — `panel.test.tsx` (the Overview frames), `tabs.test.tsx` (tabs, chats, decisions, rules, subagent picks), `know.test.tsx` (parser, outcomes, gate, backoff, notes, explanations, Submit, the saved on/off pick), `spend.test.tsx` (prices, the MODEL frame's spend lines, the reset after `/clear`).
 - `tsconfig.json` — extends the types the engine lays in `.claude-plugin/types/` (gitignored, written on load).
 
 ## Rules the validator enforces
@@ -33,7 +33,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
 
 - **Pane.** The Pane's `ui.render` hooks nest in registration order. `register.tsx` registers first, so its hook is outermost: it draws the tab bar and `next(e)` below it. Each tab's hook returns its body when `tab` is its own, else `next(e)`.
 - **State.**
-  - `$.state` (atoms) holds `tab`, `chats`, `chatId`, `nextChatId`, `decisions`, `decisionId`, `nextDecisionId`, `agentModel`, `agentEffort`, `notes`, `noteId`, `nextNoteId`, `isKnowOn`. A hot reload keeps them; a new session starts empty. `update` redraws the readers.
+  - `$.state` (atoms) holds `tab`, `chats`, `chatId`, `nextChatId`, `decisions`, `decisionId`, `nextDecisionId`, `agentModel`, `agentEffort`, `notes`, `noteId`, `nextNoteId`, `isKnowOn`, `spend`. A hot reload keeps them; a new session starts empty. `update` redraws the readers.
   - Module variables hold the rest (`repos`, `agents`, `usage`, `live`, `knowLive`, the subagent effort map); a reload restarts them and the next tick or event refills them.
   - A render hook never writes state (the host refuses it): writes happen in handlers and other events.
   - `$.store` keeps `agentModel` / `agentEffort` between sessions: the SUBAGENTS dropdowns write both the atom and the store; `session.start` in `subagents.ts` (every session, `-p` included) loads the store into the atoms, a value outside the lists ignored.
@@ -45,6 +45,8 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
   - After a `Bash` call matching `GIT_CMD`, `tool.call` finds its repo (`commandDir`: `git -C`, a leading `cd … &&`, else the session's directory read before the call; `repoOf`: the innermost scanned repo) and queues it in `pending`; 3 s after the last such call `refreshRepo` reads those repos' git status, and `gh` only when a queued command matched `REMOTE_CMD` (a push, a branch change, a gh write), the repo's `hasGh` is true and its `ghAt` is `GH_GAP_MS` (60 s) old. A directory outside every scanned repo is skipped. `refreshAll` reads each repo on its own, so one that fails does not stop the rest.
   - `readGh` makes one `gh pr view` call; CI comes from its `statusCheckRollup` and is kept only for an `OPEN` PR. There is no `gh run list`.
   - The 2 s timer reads agents, model and usage only while the pane is open on Overview; otherwise agents alone while one runs (so its end time stays right), and nothing else. It invalidates only when that data changed, a subagent runs, or every 15th tick (30 s, for the "ago" labels).
+  - `spend` sums usage by who asked (`withSpend` in `shared.ts`): `session` from every `turn.step` result (main loop and subagents, priced by the result's model), `explain`, `knowCheck` and `knowExplain` after each `$.model.fork` (priced by `live.model`, the model a fork runs on). `usdOf` prices from `PRICES` (list prices; a cache write at 1.25x input); a model not listed counts in `unpriced`. The 2 s timer starts `spend` over when `usage.startedAt` moves (a `/clear`); `since` 0 only takes the first value.
+  - The MODEL frame's last two lines: `session $total main ~$(total − pane) i/o` and `pane ~$ explain n · know n i/o`, drawn by `spendRow` in fixed columns (label 8, $ 8, what it covers 19, then `i/o` input/output tokens: 48 characters with two-digit counts, within a 56-column pane) so they line up, each `fit` to the frame (`–` for the $ while any pane request is unpriced, which also hides `main`).
   - MODEL dropdowns write the `/config` rows with `$.config.set` (rows found at `session.start`, `settings`), falling back to `$.command.run` (`/model`, `/effort`, queued until idle). `classic.PreModelSwitch` answers `allow` once, when `requested_model` or `to_model` names `live.switchTo` (the model a pane pick set). A dropdown opens only when `settings` or `commands` has it.
   - SUBAGENTS dropdowns write `agentModel` / `agentEffort` (`inherit` by default), in the atom and in `$.store`.
   - PR and CI rows open their https URL with `open`, else `xdg-open`.
@@ -98,6 +100,7 @@ Tests run with no process or network. `$.ui.mount` needs `mock.clock(on)` becaus
 - A subagent's effort is recorded when `agent.spawn` resolves; a request the subagent sends before that runs at the engine's effort.
 - Explain answers and Know checks run on the main session's model; `$.model.fork` takes no model or effort.
 - Rate limits are percentages only.
+- `main ~$` assumes `/cost` counts the panel's forks (a fork runs the same query engine as a subagent); not measured on a live session. `PRICES` is a fixed table: a price change or a new model needs an edit.
 - The dock needs 110+ columns (144 when opened unasked); `/panel` asks explicitly.
 - The `tool.call`, `prompt.submit`, `agent.spawn` and `classic.PreModelSwitch` hooks have no `.catch`: one that throws is skipped and the call goes on as it was; the `decisions` tool then has no answer and its call fails.
 - Where an organization manages Claude Code, `prompt.compose` and `classic.PreModelSwitch` do not reach an installed plugin: the rules section and the no-prompt model switch are then absent.

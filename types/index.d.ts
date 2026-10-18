@@ -5,6 +5,20 @@ export type SessionPanelTab = 'overview' | 'explain' | 'decisions' | 'know'
 // What one answer cost, as the API counted it.
 export type SessionPanelUsage = { input: number; cacheRead: number; cacheWrite: number; output: number }
 
+// Tokens and calls summed over a run of requests; `usd` prices the ones whose model has a price, `unpriced`
+// counts the rest.
+export type SessionPanelSpend = { calls: number; input: number; output: number; usd: number; unpriced: number }
+
+// What this session spent, by who asked: the session's own loops (main and subagents) and each panel feature.
+// `since` is the session's `startedAt` the sums count from; a /clear starts them over.
+export type SessionPanelSpending = {
+  since: number
+  session: SessionPanelSpend
+  explain: SessionPanelSpend
+  knowCheck: SessionPanelSpend
+  knowExplain: SessionPanelSpend
+}
+
 export type SessionPanelTurn = { question: string; answer: string; usage?: SessionPanelUsage }
 
 export type SessionPanelChat = {
@@ -64,6 +78,7 @@ declare module 'claude-code' {
       noteId: number
       nextNoteId: number
       isKnowOn: boolean
+      spend: SessionPanelSpending
     }
   }
 }

@@ -94,6 +94,8 @@ The panel adds a fixed section to the system prompt of every session with a term
 - **Effort** is read from the main loop's model requests, so it shows `–` until the first request.
 - **ctx** is the last response's input tokens over the model's window.
 - **5h / 7d** are the percentages the API last reported, with the time left until the window resets. The API gives no token counts, so none are shown.
+- **session** is what the session has cost, as `/cost` totals it (the panel's own requests included), then `main ~$`: that total less the panel's estimate. `i/o` are the input/output tokens of the session's own requests, main loop and subagents (`in` counts cached and uncached input).
+- **pane** is what the panel's own requests used: `~$` estimated from list prices (Fable 5.1, Opus 5.5, Sonnet 5.5; another model shows `–`), Explain questions, Know checks and explanations, and their tokens. Decisions makes no request of its own: its tool calls and Submit are part of the session. The two lines keep fixed columns ($, what it covers, `i/o`) so they compare at a glance, and both start over after `/clear`.
 - **PR / CI** come from `gh pr view`. Click the PR text to open the pull request, or the CI text to open its checks page, in your default browser (`open`, falling back to `xdg-open`; only `https://` links). CI is shown only for an open PR; a branch with no PR shows `no PR` and no CI.
 - **Subagent tasks** come from the subagent's `TodoWrite` calls: `x/y tasks`, ✓ done, ▶ doing, ○ waiting. A subagent that never calls `TodoWrite` shows only its tool count and last tool call, with tokens, passwords and API keys in it masked.
 

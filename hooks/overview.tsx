@@ -1,14 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { ConfigRow, On, RenderChildren, SessionUsage } from 'claude-code'
 
-import type { SessionPanelTab } from '../types'
+import type { SessionPanelSpending, SessionPanelTab } from '../types'
 import { ago, bar, clock, commandDir, level, parseCi, repoOf, TERMINAL, toolSummary, until } from './overview-data'
 import type { AgentView, Picker, Repo, Todo } from './overview-data'
-import { EFFORTS, fit, INHERIT, live, MODELS, PANE } from './shared'
+import { EFFORTS, fit, INHERIT, live, MODELS, NO_SPENDING, PANE, paneSpend, tokens } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const agentModel = atom({ plugin: 'session-panel', key: 'agentModel' } as const, 'inherit')
 const agentEffort = atom({ plugin: 'session-panel', key: 'agentEffort' } as const, 'inherit')
+const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
 
 const FAST_MS = 2000
 const GIT_CMD = /(^|[\s;&|(])(git|gh)\s/
@@ -172,6 +173,9 @@ export const registerOverview = (on: On) => {
         if (!isShown) return
         live.model = await $.session.model()
         usage = await $.session.usage()
+        // The spend counts from the session's start; a /clear moves it, and the sums start over with it.
+        const startedAt = usage.startedAt
+        await update($, spend, s => (s.since === startedAt ? s : s.since === 0 ? { ...s, since: startedAt } : { ...NO_SPENDING, since: startedAt }))
         const seen = JSON.stringify([live.model, usage, [...agents.values()]])
         const isTicking = [...agents.values()].some(a => a.endedAt === undefined)
         tick += 1
@@ -268,6 +272,7 @@ export const registerOverview = (on: On) => {
     const now = await $.clock.now()
     const subModel = await read($, agentModel)
     const subEffort = await read($, agentEffort)
+    const spending = await read($, spend)
 
     const frame = (title: string, color: string, right: RenderChildren, rows: RenderChildren) => (
       <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1} marginBottom={0}>
@@ -447,6 +452,31 @@ export const registerOverview = (on: On) => {
       live.model = await $.session.model()
       $.ui.invalidate('ui.render')
     }
+    // Two lines: the session as /cost totals it (panel forks included) with its own loops' tokens, and the
+    // panel's forks. `main` is the session less the panel's estimate; Decisions makes no request of its own.
+    const pane = paneSpend(spending)
+    const paneUsd = pane.unpriced === 0 ? pane.usd : undefined
+    const total = usage?.cost?.usd
+    const main = total !== undefined && paneUsd !== undefined && pane.calls > 0 ? Math.max(0, total - paneUsd) : undefined
+    const session = spending.session
+    // Fixed columns, so the two lines' costs and tokens sit under each other: label, $, what it covers, input/output tokens.
+    const spendRow = (label: string, usd: string, covers: string, input: number, output: number) => (
+      <Text dimColor>{fit(`${label.padEnd(8)}${usd.padEnd(8)}${covers.padEnd(19)}i/o ${tokens(input)}/${tokens(output)}`, width)}</Text>
+    )
+    const spendRows = [
+      total !== undefined || session.calls > 0
+        ? spendRow('session', total === undefined ? '–' : `$${total.toFixed(2)}`, main === undefined ? '' : `main ~$${main.toFixed(2)}`, session.input, session.output)
+        : null,
+      pane.calls > 0
+        ? spendRow(
+            'pane',
+            paneUsd === undefined ? '–' : `~$${paneUsd.toFixed(2)}`,
+            `explain ${spending.explain.calls} · know ${spending.knowCheck.calls + spending.knowExplain.calls}`,
+            pane.input,
+            pane.output,
+          )
+        : null,
+    ]
     const canSwitch = (command: 'model' | 'effort') => settings.has(command) || commands.has(command)
     const modelRows = [
       <Box>
@@ -459,7 +489,7 @@ export const registerOverview = (on: On) => {
       meter('ctx', pct, `${Math.round((ctx?.tokens ?? 0) / 1000)}k/${window}`),
       meter('5h', five?.percentUsed, five ? `reset ${until(five.resetsAt, now)}` : ''),
       meter('7d', seven?.percentUsed, seven ? `reset ${until(seven.resetsAt, now)}` : ''),
-      usage?.cost ? <Text dimColor>session cost ${usage.cost.usd.toFixed(2)}</Text> : null,
+      ...spendRows,
     ]
 
     return (

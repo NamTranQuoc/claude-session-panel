@@ -1,14 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
-import type { SessionPanelNote, SessionPanelTab, SessionPanelUsage } from '../types'
+import type { SessionPanelNote, SessionPanelSpending, SessionPanelTab, SessionPanelUsage } from '../types'
 import { explainNotePrompt, KEPT_LINES, noteDraft, noteKey } from './know-prompt'
-import { fit, live, PANE, strings, tokens } from './shared'
+import { fit, live, NO_SPENDING, PANE, strings, tokens, withSpend } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const notes = atom({ plugin: 'session-panel', key: 'notes' } as const, [] as SessionPanelNote[])
 const noteId = atom({ plugin: 'session-panel', key: 'noteId' } as const, 0)
 const isKnowOn = atom({ plugin: 'session-panel', key: 'isKnowOn' } as const, false)
+const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
 
 // What the checks are doing, for the hook that runs them (`turn.step`) and the tab that shows the last one.
 export const knowLive = {
@@ -66,6 +67,10 @@ export const registerKnow = (on: On) => {
       if (note.isExplaining) return
       await patch(note.id, { isExplaining: true })
       const reply = await $.model.fork({ prompt: explainNotePrompt(note.line, note.explanation) }).catch(() => undefined)
+      if (reply && 'usage' in reply && reply.usage) {
+        const used = reply.usage
+        await update($, spend, s => withSpend(s, 'knowExplain', used, live.model))
+      }
       const text = reply?.isAnswered ? reply.text.trim() : ''
       if (!text) $.ui.toast("Couldn't write that explanation.")
       await patch(note.id, { isExplaining: false, ...(text ? { explanation: text } : {}) })
