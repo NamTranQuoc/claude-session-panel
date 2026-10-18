@@ -1,12 +1,13 @@
 # claude-session-panel
 
-A Claude Code mod that docks a panel to the right of the transcript, with three tabs:
+A Claude Code mod that docks a panel to the right of the transcript, with four tabs:
 
 | Tab | Holds |
 | --- | --- |
 | **Overview** | MODEL (model, effort, context %, 5-hour and 7-day rate limits, cost), GIT (each repo's branch, changes, PR, CI) and SUBAGENTS (each subagent's progress, plus the model and effort new subagents get) |
 | **Explain** | Side chats about the session: ask as many follow-up questions as you like; answers are brief and nothing is ever run or changed |
 | **Decisions** | The numbered questions (D1, D2, …) the main agent needs you to settle; answer them and submit the answers back |
+| **Know** | Notes a side check finds worth knowing during long tasks (a decision you may have missed, a cost, a constraint); off until you turn it on |
 
 It also gives the main agent its working rules: questions go to Decisions, and work goes to subagents only when you decide to delegate it.
 
@@ -34,7 +35,7 @@ Requirements:
 ## Use
 
 - The pane opens by itself when an interactive session starts. `/panel` closes it, or opens it again.
-- The tab bar on top switches tabs. `Explain 2` and `Decisions 3` count open chats and open decisions.
+- The tab bar on top switches tabs. `Explain 2`, `Decisions 3` and `Know 1` count open chats, open decisions and unanswered notes.
 
 ### Overview
 
@@ -63,6 +64,22 @@ Requirements:
 - **Submit** sends every saved answer to the main agent as one prompt (`D3: option 2. your text`: an option goes by its number, never its text). Each answered decision rides along as text the assistant wrote, so `option 2` still reads after the conversation is compacted. Sent items show `↑` until the agent updates or removes them.
 - While the main agent is working, answering and Submit are locked; the list and details stay readable.
 - `D3` in your own prompt attaches that decision for the main agent, marked as text the assistant wrote. `D3.js` or `AD3` is not a mention.
+
+### Know
+
+- **[checks off]** / **[checks on]** at the top turns the checks on or off; the choice is saved for the next sessions. Off by default.
+- While a check is on and the pane is open (any tab), a side check runs on the 6th, 12th, 18th … step of a long turn: one `$.model.fork` over the main session, asked whether there is one thing you should know and likely missed. Most checks find nothing. Turns shorter than 6 steps are never checked.
+- A note shows as `✦ K1  Heads up · <line>`. Press it for its explanation and these answers:
+  - **Understood** / **Knew this already**: the note leaves, and later checks skip that topic.
+  - **Not relevant** / **Dismiss**: the note leaves.
+  - **Couldn't understand**: the explanation is rewritten in plainer words (one more fork).
+  - **Explain**: shown instead when the check wrote no explanation (one more fork).
+  - Type a reply in the field, Enter to save it, then **Submit**: the note, quoted, and your reply go into the prompt box for you to send. With text already in the prompt box, nothing is replaced; send or clear it first.
+- At most 3 unanswered notes; at 3, checks stop. One note per turn; a line already offered or known is not offered again.
+- A note you have seen (the Know tab was open) and passed by with 2 prompts is dropped as ignored. Three or more ignored in a row make the next checks skip: 1, then 2, 4, 8, up to 16. Any answer resets that.
+- Under the toggle: the last check's outcome and its tokens (`in`, `cached`, `written`, `out`).
+- Cost: each check reads the main session's cached context and pays the check's rules (about 1,400 tokens, plus up to 100 lines of topics to skip) and its output at full price. On Opus 5.5 that is roughly $0.04-0.07 a check at 100k tokens of context, $0.08-0.11 at 300k: about +10-25% on a long turn. On a Pro or Max plan it counts against the usage limits instead.
+- Uninstall Claude Code's built-in *You should know* plugin when using this tab: both would check the same session.
 
 ### Working rules for the main agent
 

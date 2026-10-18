@@ -1,6 +1,6 @@
 // The session panel's state, kept by the host across hot reloads (`$.state`).
 
-export type SessionPanelTab = 'overview' | 'explain' | 'decisions'
+export type SessionPanelTab = 'overview' | 'explain' | 'decisions' | 'know'
 
 // What one answer cost, as the API counted it.
 export type SessionPanelUsage = { input: number; cacheRead: number; cacheWrite: number; output: number }
@@ -28,6 +28,26 @@ export type SessionPanelDecision = {
   sentAt?: number
 }
 
+export type SessionPanelNoteTag = 'You should know' | 'Heads up'
+
+// A note the side check found worth knowing; it stays until the user answers it or ignores it.
+export type SessionPanelNote = {
+  // Shown as K<id>; never reused within a session.
+  id: number
+  line: string
+  tag: SessionPanelNoteTag
+  // Markdown: a bold title line, then the body; '' when the check wrote none.
+  explanation: string
+  shownAt: number
+  // The Know tab was drawn with this note in it; only then do prompts count as passing it by.
+  isSeen: boolean
+  // Prompts submitted since it was seen.
+  promptsPast: number
+  // The user's reply, saved from the Input; Submit puts it in the prompt box under the note.
+  draft: string
+  isExplaining?: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'session-panel': {
@@ -40,6 +60,10 @@ declare module 'claude-code' {
       nextDecisionId: number
       agentModel: string
       agentEffort: string
+      notes: SessionPanelNote[]
+      noteId: number
+      nextNoteId: number
+      isKnowOn: boolean
     }
   }
 }

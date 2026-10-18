@@ -1,21 +1,23 @@
 # claude-session-panel — maintenance guide
 
-A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module draws a docked `Pane` with three tabs and gives the main agent its working rules. Read `README.md` for what users see; this file is for changing the code.
+A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module draws a docked `Pane` with four tabs and gives the main agent its working rules. Read `README.md` for what users see; this file is for changing the code.
 
 ## Files
 
 - `hooks/hooks.json` — `{ "modules": ["./register.tsx"] }`, one path.
-- `hooks/register.tsx` — entry: the tab bar (outermost Pane hook), `session.start` for interactive sessions (`/panel`, the `decisions` tool, opening the pane), `/panel`, `prompt.compose`, `turn.start`, `turn.complete`; then calls each `registerX(on)`.
+- `hooks/register.tsx` — entry: the tab bar (outermost Pane hook), `session.start` for interactive sessions (`/panel`, the `decisions` tool, opening the pane), `/panel`, `prompt.compose`, `turn.start`, `turn.step`, `turn.complete`; then calls each `registerX(on)`.
 - `hooks/overview.tsx` — Overview tab: MODEL, GIT, SUBAGENTS frames, their timers and data (`session.start` for interactive sessions, `tool.call`, `classic.PreModelSwitch`).
 - `hooks/overview-data.ts` — the Overview's data shapes and helpers (formatting, `parseCi`, `commandDir`, `repoOf`; no `$`).
 - `hooks/explain.tsx` — Explain tab: chats and `$.model.fork` calls.
 - `hooks/decisions.tsx` — Decisions tab, the `decisions` tool's `tool.call`, `D<n>` mentions on `prompt.submit`.
-- `hooks/subagents.ts` — subagent model/effort picks: `session.start` (loads the saved picks), `agent.spawn`, `turn.step`.
+- `hooks/know.tsx` — Know tab: the note list and its answers, `session.start` (loads the on/off pick), `knowLive` (the checks' runtime state).
+- `hooks/know-prompt.ts` — the Know check's rules and prompts, `parseNote`, `checkOutcome`, the gate and backoff numbers, `noteDraft` (no `$`).
+- `hooks/subagents.ts` — subagent model/effort picks: `session.start` (loads the saved picks), `agent.spawn`, `effortOf` for `turn.step`.
 - `hooks/system.ts` — the fixed system prompt section (`RULES`).
 - `hooks/shared.ts` — constants, `live` (what hooks learn as the session runs), text helpers.
 - `types/index.d.ts` — the `$.state` contract (`PluginState['session-panel']`) and its value types.
 - `.claude-plugin/plugin.json` — manifest. `marketplace.json` — makes this repo installable.
-- `tests/` — `panel.test.tsx` (the Overview frames), `tabs.test.tsx` (tabs, chats, decisions, rules, subagent picks).
+- `tests/` — `panel.test.tsx` (the Overview frames), `tabs.test.tsx` (tabs, chats, decisions, rules, subagent picks), `know.test.tsx` (parser, outcomes, gate, backoff, notes, explanations, Submit, the saved on/off pick).
 - `tsconfig.json` — extends the types the engine lays in `.claude-plugin/types/` (gitignored, written on load).
 
 ## Rules the validator enforces
@@ -31,9 +33,11 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
 
 - **Pane.** The Pane's `ui.render` hooks nest in registration order. `register.tsx` registers first, so its hook is outermost: it draws the tab bar and `next(e)` below it. Each tab's hook returns its body when `tab` is its own, else `next(e)`.
 - **State.**
-  - `$.state` (atoms) holds `tab`, `chats`, `chatId`, `nextChatId`, `decisions`, `decisionId`, `nextDecisionId`, `agentModel`, `agentEffort`. A hot reload keeps them; a new session starts empty. `update` redraws the readers.
-  - Module variables hold the rest (`repos`, `agents`, `usage`, `live`, the subagent effort map); a reload restarts them and the next tick or event refills them.
+  - `$.state` (atoms) holds `tab`, `chats`, `chatId`, `nextChatId`, `decisions`, `decisionId`, `nextDecisionId`, `agentModel`, `agentEffort`, `notes`, `noteId`, `nextNoteId`, `isKnowOn`. A hot reload keeps them; a new session starts empty. `update` redraws the readers.
+  - Module variables hold the rest (`repos`, `agents`, `usage`, `live`, `knowLive`, the subagent effort map); a reload restarts them and the next tick or event refills them.
+  - A render hook never writes state (the host refuses it): writes happen in handlers and other events.
   - `$.store` keeps `agentModel` / `agentEffort` between sessions: the SUBAGENTS dropdowns write both the atom and the store; `session.start` in `subagents.ts` (every session, `-p` included) loads the store into the atoms, a value outside the lists ignored.
+  - `$.store` also keeps the Know check's `knowOn`, `knowSeen` and `knowKnown` (50 lines each), `knowIgnored` and `knowSkips`.
 - **Overview.**
   - `session.start` (interactive sessions only: a `-p` or SDK run reads no git or gh) starts one timer (agents + usage, 2 s; local calls only) and calls `refreshAll()` once.
   - `scan` runs `find <root> -maxdepth 2 -name .git` (the session folder and its direct children); `root` equal to `$HOME` or `/` sets `isScanSkipped` and scans nothing.
@@ -46,7 +50,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
   - PR and CI rows open their https URL with `open`, else `xdg-open`.
 - **Subagent picks.** `agent.spawn` skips forks, teammates, workflow agents and resumes. Otherwise:
   - model: the call's `model` if set, else the pick unless `inherit`.
-  - effort: a leading `effort: <level>` line in the prompt (removed before the spawn), else the pick unless `inherit`; recorded per `agentId`. `turn.step` rewrites `effort` on that agent's requests; `turn.complete` drops the record.
+  - effort: a leading `effort: <level>` line in the prompt (removed before the spawn), else the pick unless `inherit`; recorded per `agentId`. `turn.step` (register.tsx) rewrites `effort` on that agent's requests through `effortOf`; `turn.complete` drops the record.
   - `turn.step` on the main loop records `live.model` / `live.effort`, and `live.mainAt` when the request ends.
 - **Explain.**
   - `+` adds a chat, `x` deletes it. A chat is `{ id, history, draft, isAsking, notice, isColdWarned }`.
@@ -62,6 +66,12 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
   - Submit sends the saved answers through `$.prompt.submit` and stamps `sentAt`. `formatAnswer` sends a leading option number as `option <n>`, never the option's text: text the agent wrote does not come back as the user's words.
   - `prompt.submit` attaches the items a prompt names (`MENTION`: `D<n>` not inside a longer word or before `.`) as `context`, labelled as assistant-written data. The panel's own Submit goes through it too, so `D3: option 2` keeps its title and options after a compaction.
   - The answer `Input` is `rows={3}`: a long answer wraps instead of scrolling out of sight.
+- **Know.**
+  - `turn.step` on the main loop starts a check beside the request (never awaited) when: `isCheckStep(index)` (6, 12, 18 …), no check running, no note offered this turn (`knowLive.offeredTurn`), `isKnowOn`, fewer than `MAX_OPEN_NOTES` (3) notes, `$.ui.panes()` has the pane placed and shown, and `knowSkips` is 0 (else it is decremented).
+  - The check: `$.model.fork` with `knowPrompt(knowSeen, knowKnown, open decision titles)`. `parseNote` reads `learn: none` (the word alone) or `learn` / `tag` / `explain`, strips escape sequences, and cuts the explanation at 4000 characters; a line over 240 characters is unparsable. `checkOutcome` then names the result: the fork's `reason`, `none` / `unparsable`, `duplicate` (a line in `knowSeen` or `knowKnown` by `noteKey`), `off` (turned off while the fork ran), `stale` (`live.turnId` moved on), `full` (3 notes), else `shown`, and the note joins `notes` and `knowSeen`. `knowLive.last` keeps the outcome and usage for the tab's header.
+  - A note is `isSeen` once the Know tab is opened with it (the tab bar press), or when it arrives while Know is on show. `turn.start` on the main loop adds one to `promptsPast` of each seen note; at `IGNORED_AFTER_PROMPTS` (2) it is dropped, `knowIgnored` grows and `knowSkips` = `skipsAfter(knowIgnored)` (0 up to 2, then 1, 2, 4 … 16). Any answer resets both. A store failure there is caught: the turn starts as it would.
+  - Answers: Understood / Knew this already add the line to `knowKnown`; Not relevant / Dismiss only remove it. Couldn't understand and Explain fork `explainNotePrompt`.
+  - Submit: `$.prompt.read` must be empty (else a toast), then `$.prompt.fill` (`replace`) with `noteDraft` (the note quoted, `@` and `ultra…` made inert, then the reply); filled, the note is closed as known; a dialog or a refusal is a toast. Hidden while the main agent runs.
 - **System prompt.** `prompt.compose` appends the section `session-panel:rules` (`RULES`, fixed text) with scope `session`, except for `teammate`, `bare`, `print` and `sdk-preset` prompts. Its text never changes mid-session, so it never moves the prompt cache.
 
 ## Add a feature
@@ -86,7 +96,7 @@ Tests run with no process or network. `$.ui.mount` needs `mock.clock(on)` becaus
 
 - Subagent progress needs `TodoWrite`. `TaskCreate` / `TaskUpdate` are not handled.
 - A subagent's effort is recorded when `agent.spawn` resolves; a request the subagent sends before that runs at the engine's effort.
-- Explain answers run on the main session's model; `$.model.fork` takes no model or effort.
+- Explain answers and Know checks run on the main session's model; `$.model.fork` takes no model or effort.
 - Rate limits are percentages only.
 - The dock needs 110+ columns (144 when opened unasked); `/panel` asks explicitly.
 - The `tool.call`, `prompt.submit`, `agent.spawn` and `classic.PreModelSwitch` hooks have no `.catch`: one that throws is skipped and the call goes on as it was; the `decisions` tool then has no answer and its call fails.

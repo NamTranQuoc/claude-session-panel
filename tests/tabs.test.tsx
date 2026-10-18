@@ -24,6 +24,8 @@ test('the tab bar switches the body', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Press \+ to open/ })).toBeDefined()
   await ui.press({ key: 'tab-decisions' })
   expect(await ui.find({ type: 'Text', text: 'No open decisions.' })).toBeDefined()
+  await ui.press({ key: 'tab-know' })
+  expect(await ui.find({ type: 'Text', text: /Checks are off/ })).toBeDefined()
   await ui.unmount()
 })
 

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { ModelEffort, On } from 'claude-code'
 
-import { EFFORTS, INHERIT, live, MODELS } from './shared'
+import { EFFORTS, INHERIT, MODELS } from './shared'
 
 const agentModel = atom({ plugin: 'session-panel', key: 'agentModel' } as const, 'inherit')
 const agentEffort = atom({ plugin: 'session-panel', key: 'agentEffort' } as const, 'inherit')
@@ -16,7 +16,11 @@ export const endSubagent = (agentId: string | undefined) => {
   if (agentId !== undefined) efforts.delete(agentId)
 }
 
-// Applies the pane's subagent model and effort picks to spawns that do not name their own.
+// The effort a subagent's requests run at, when its spawn recorded one (`turn.step` in register.tsx).
+export const effortOf = (agentId: string) => efforts.get(agentId)
+
+// Applies the pane's subagent model and effort picks to spawns that do not name their own; the effort
+// rides each of the subagent's requests through `turn.step` in register.tsx.
 export const registerSubagents = (on: On) => {
   // The picks of the last session, kept in the plugin's store; `-p` runs use them too.
   on('session.start', async ($, e, next) => {
@@ -42,19 +46,5 @@ export const registerSubagents = (on: On) => {
     if (level && started.agentId) efforts.set(started.agentId, level)
 
     return started
-  })
-
-  on('turn.step', async function* ($, e, next) {
-    if (e.agentId === undefined) {
-      live.model = e.model
-      live.effort = e.effort === undefined ? '' : String(e.effort)
-      const done = yield* next(e)
-      live.mainAt = await $.clock.now()
-
-      return done
-    }
-    const level = efforts.get(e.agentId)
-
-    return yield* next(level ? { ...e, effort: level } : e)
   })
 }

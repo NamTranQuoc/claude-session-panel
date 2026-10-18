@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { SessionPanelChat, SessionPanelDecision, SessionPanelTab } from '../types'
-import { fit, listDecisions, live, PANE } from './shared'
+import { fit, listDecisions, live, PANE, tokens } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const chats = atom({ plugin: 'session-panel', key: 'chats' } as const, [] as SessionPanelChat[])
@@ -51,8 +51,6 @@ export const explainPrompt = (openDecisions: string, history: SessionPanelChat['
     .filter(Boolean)
     .join('\n\n')
 }
-
-const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n))
 
 // The Explain tab: side chats, each question one `$.model.fork` over the main thread's last request.
 export const registerExplain = (on: On) => {

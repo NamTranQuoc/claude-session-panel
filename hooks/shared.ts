@@ -17,7 +17,15 @@ export const live = {
   mainAt: 0,
   // The model a pane pick is switching to, until the switch asks; '' otherwise.
   switchTo: '',
+  // The main loop's latest turn, from its `turn.start`.
+  turnId: '',
 }
+
+export const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n))
+
+// `$.store` values as kept: a list of strings, a count; anything else reads as empty.
+export const strings = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
+export const count = (value: unknown) => (typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0)
 
 export const fit = (text: string, width: number) =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text
