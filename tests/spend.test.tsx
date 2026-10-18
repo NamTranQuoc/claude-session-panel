@@ -58,12 +58,12 @@ test('the MODEL frame splits the session from the panel', async ($, on) => {
   for (const index of [0, 1, 2, 3, 4, 5, 6]) await step(index)
   await clock.advance(2000)
 
-  // Seven session requests; one Know check at $0.038. Columns line up: $, what it covers, i/o.
+  // Seven session requests; one Know check at $0.038. The $ and i/o columns line up.
   const session = (await ui.find({ type: 'Text', text: /^session / }))?.text ?? ''
   const pane = (await ui.find({ type: 'Text', text: /^pane / }))?.text ?? ''
-  expect(session).toMatch(/^session +\$1\.00 +main ~\$0\.96 +i\/o 714k\/3\.5k$/)
-  expect(pane).toMatch(/^pane +~\$0\.04 +explain 0 · know 1 +i\/o 102k\/500$/)
-  for (const column of [/[$~]/, /main|explain/, /i\/o/]) expect(session.search(column)).toBe(pane.search(column))
+  expect(session).toBe('session $1.00    i/o 714k/3.5k')
+  expect(pane).toBe('pane    ~$0.04   i/o 102k/500')
+  for (const column of [/[$~]/, /i\/o/]) expect(session.search(column)).toBe(pane.search(column))
   await ui.unmount()
 })
 
@@ -95,6 +95,6 @@ test('a /clear starts the spend over', async ($, on) => {
   startedAt = 9
   await clock.advance(2000)
   expect(await ui.find({ type: 'Text', text: /i\/o 102k/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^session +\$0\.50 +i\/o 0\/0$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'session $0.50    i/o 0/0' })).toBeDefined()
   await ui.unmount()
 })

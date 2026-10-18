@@ -452,30 +452,17 @@ export const registerOverview = (on: On) => {
       live.model = await $.session.model()
       $.ui.invalidate('ui.render')
     }
-    // Two lines: the session as /cost totals it (panel forks included) with its own loops' tokens, and the
-    // panel's forks. `main` is the session less the panel's estimate; Decisions makes no request of its own.
+    // Two lines in fixed columns, so the costs and tokens sit under each other: the session as /cost totals it
+    // with its own loops' tokens, and the panel's forks (Decisions makes no request of its own).
     const pane = paneSpend(spending)
-    const paneUsd = pane.unpriced === 0 ? pane.usd : undefined
     const total = usage?.cost?.usd
-    const main = total !== undefined && paneUsd !== undefined && pane.calls > 0 ? Math.max(0, total - paneUsd) : undefined
     const session = spending.session
-    // Fixed columns, so the two lines' costs and tokens sit under each other: label, $, what it covers, input/output tokens.
-    const spendRow = (label: string, usd: string, covers: string, input: number, output: number) => (
-      <Text dimColor>{fit(`${label.padEnd(8)}${usd.padEnd(8)}${covers.padEnd(19)}i/o ${tokens(input)}/${tokens(output)}`, width)}</Text>
+    const spendRow = (label: string, usd: string, input: number, output: number) => (
+      <Text dimColor>{fit(`${label.padEnd(8)}${usd.padEnd(9)}i/o ${tokens(input)}/${tokens(output)}`, width)}</Text>
     )
     const spendRows = [
-      total !== undefined || session.calls > 0
-        ? spendRow('session', total === undefined ? '–' : `$${total.toFixed(2)}`, main === undefined ? '' : `main ~$${main.toFixed(2)}`, session.input, session.output)
-        : null,
-      pane.calls > 0
-        ? spendRow(
-            'pane',
-            paneUsd === undefined ? '–' : `~$${paneUsd.toFixed(2)}`,
-            `explain ${spending.explain.calls} · know ${spending.knowCheck.calls + spending.knowExplain.calls}`,
-            pane.input,
-            pane.output,
-          )
-        : null,
+      total !== undefined || session.calls > 0 ? spendRow('session', total === undefined ? '–' : `$${total.toFixed(2)}`, session.input, session.output) : null,
+      pane.calls > 0 ? spendRow('pane', pane.unpriced === 0 ? `~$${pane.usd.toFixed(2)}` : '–', pane.input, pane.output) : null,
     ]
     const canSwitch = (command: 'model' | 'effort') => settings.has(command) || commands.has(command)
     const modelRows = [
