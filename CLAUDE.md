@@ -60,7 +60,8 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
   - A selected item that disappears is deselected.
   - `live.isMainRunning` (`turn.start` / `turn.complete` on the main loop) hides the answer `Input` and **Submit**.
   - Submit sends the saved answers through `$.prompt.submit` and stamps `sentAt`. `formatAnswer` sends a leading option number as `option <n>`, never the option's text: text the agent wrote does not come back as the user's words.
-  - `prompt.submit` attaches the items a prompt names (`MENTION`: `D<n>` not inside a longer word or before `.`) as `context`, labelled as assistant-written data. The panel's own Submit (`origin` this plugin) is skipped.
+  - `prompt.submit` attaches the items a prompt names (`MENTION`: `D<n>` not inside a longer word or before `.`) as `context`, labelled as assistant-written data. The panel's own Submit goes through it too, so `D3: option 2` keeps its title and options after a compaction.
+  - The answer `Input` is `rows={3}`: a long answer wraps instead of scrolling out of sight.
 - **System prompt.** `prompt.compose` appends the section `session-panel:rules` (`RULES`, fixed text) with scope `session`, except for `teammate`, `bare`, `print` and `sdk-preset` prompts. Its text never changes mid-session, so it never moves the prompt cache.
 
 ## Add a feature

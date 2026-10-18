@@ -94,9 +94,9 @@ export const registerDecisions = (on: On) => {
   })
 
   // A prompt naming D<n> carries those items, so the main agent reads what the user points at. The
-  // panel's own Submit is skipped: it names every answered item, whose text the agent already has.
+  // panel's own Submit too: after a compaction `D3: option 2` means nothing without the item.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command || (e.origin.kind === 'plugin' && e.origin.name === PLUGIN)) return next(e)
+    if (e.command) return next(e)
     const ids = new Set([...e.text.matchAll(MENTION)].map(m => Number(m[1])))
     const named = ids.size === 0 ? [] : (await read($, decisions)).filter(d => ids.has(d.id))
     if (named.length === 0) return next(e)
@@ -167,6 +167,7 @@ export const registerDecisions = (on: On) => {
                 key={`decision-input-${selected.id}`}
                 placeholder={selected.options?.length ? 'Option number and/or your answer' : 'Your answer'}
                 value={selected.answer ?? ''}
+                rows={3}
                 submitLabel="Save"
                 onSubmit={(value: string) => void answer(selected.id, value)}
               />

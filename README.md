@@ -59,8 +59,8 @@ Requirements:
 ### Decisions
 
 - The main agent adds, changes and removes items with its `decisions` tool. Each has a title, a detail and zero or more options. Subagents cannot change the list.
-- Press an item to show its detail, its options (`1.`, `2.`, …) and an answer field. Type an option number, free text, or both, and press Enter to save: `●` marks an answered item.
-- **Submit** sends every saved answer to the main agent as one prompt (`D3: option 2. your text`: an option goes by its number, never its text); sent items show `↑` until the agent updates or removes them.
+- Press an item to show its detail, its options (`1.`, `2.`, …) and an answer field, several lines tall so a long answer stays readable. Type an option number, free text, or both, and press Enter to save: `●` marks an answered item.
+- **Submit** sends every saved answer to the main agent as one prompt (`D3: option 2. your text`: an option goes by its number, never its text). Each answered decision rides along as text the assistant wrote, so `option 2` still reads after the conversation is compacted. Sent items show `↑` until the agent updates or removes them.
 - While the main agent is working, answering and Submit are locked; the list and details stay readable.
 - `D3` in your own prompt attaches that decision for the main agent, marked as text the assistant wrote. `D3.js` or `AD3` is not a mention.
 

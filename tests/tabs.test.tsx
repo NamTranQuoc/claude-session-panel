@@ -61,7 +61,8 @@ test('the decisions tool keeps a numbered list the pane draws', async ($, on) =>
 
   await ui.press({ key: 'decision-1' })
   expect(await ui.find({ type: 'Text', text: '2. SQLite' })).toBeDefined()
-  expect(await ui.find({ type: 'Input', key: 'decision-input-1' })).toBeDefined()
+  // Several rows, so a long answer stays readable while typed.
+  expect((await ui.find({ type: 'Input', key: 'decision-input-1' }))?.props).toMatchObject({ rows: 3 })
 
   await ui.press({ key: 'decision-2' })
   expect(await ui.find({ type: 'Text', text: /^1\. / })).toBeUndefined()
@@ -98,6 +99,20 @@ test('a prompt naming D<n> carries that decision', async ($, on) => {
   await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'Where to keep it', options: ['Postgres'] }] } as never)
 
   await $.prompt.submit({ text: 'explain D1 please', wait: false, origin: { kind: 'composer' } } as never)
+  expect(seen?.join('\n')).toContain('D1: Storage')
+  expect(seen?.join('\n')).toContain('1. Postgres')
+})
+
+test("the panel's own Submit carries the decisions it answers", async ($, on) => {
+  let seen: readonly string[] | undefined
+  on('prompt.submit', ($, e) => {
+    seen = e.context
+
+    return { text: e.text }
+  })
+  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'Where to keep it', options: ['Postgres'] }] } as never)
+
+  await $.prompt.submit({ text: 'Answers to open decisions:\n- D1: option 1', wait: false, origin: { kind: 'plugin', name: 'session-panel' } } as never)
   expect(seen?.join('\n')).toContain('D1: Storage')
   expect(seen?.join('\n')).toContain('1. Postgres')
 })
