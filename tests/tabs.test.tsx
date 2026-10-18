@@ -105,6 +105,26 @@ test('a prompt naming D<n> carries that decision', async ($, on) => {
   expect(seen?.join('\n')).toContain('1. Postgres')
 })
 
+test('Submit sends the answers to the main agent', async ($, on) => {
+  mock.clock(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-decisions' })
+  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'd', options: ['Postgres'] }] } as never)
+  await ui.press({ key: 'decision-1' })
+  await ui.input({ key: 'decision-input-1', text: '1 for now' })
+
+  await ui.press({ key: 'decisions-submit' })
+  expect(sent[0]).toContain('- D1: option 1. for now')
+  expect(await ui.find({ type: 'Text', text: /↑ D1/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test("the panel's own Submit carries the decisions it answers", async ($, on) => {
   let seen: readonly string[] | undefined
   on('prompt.submit', ($, e) => {

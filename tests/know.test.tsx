@@ -207,21 +207,13 @@ test('no check while the pane is not placed, or at three open notes', async ($, 
   await ui.unmount()
 })
 
-test('Submit puts the note and the reply in an empty prompt box', async ($, on) => {
+test('Submit sends the note and the reply to the main agent', async ($, on) => {
   const { clock } = world(on)
-  let box = 'half typed'
-  const filled: string[] = []
-  const toasts: string[] = []
-  on('prompt.read', () => ({ value: { text: box, cursor: box.length } }))
-  on('prompt.fill', ($, e) => {
-    filled.push(e.text)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
 
-    return { isFilled: true }
-  })
-  on('ui.toast', ($, e) => {
-    toasts.push(JSON.stringify(e))
-
-    return { value: undefined } as never
+    return { text: e.text }
   })
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-know' })
@@ -234,13 +226,8 @@ test('Submit puts the note and the reply in an empty prompt box', async ($, on) 
   await ui.press({ key: 'note-1' })
   await ui.input({ key: 'note-input-1', text: 'is it worth it?' })
   await ui.press({ key: 'note-submit-1' })
-  expect(filled).toHaveLength(0)
-  expect(toasts.join()).toContain('prompt box has text')
-
-  box = ''
-  await ui.press({ key: 'note-submit-1' })
-  expect(filled[0]).toContain('> Heads up · We turned on caching')
-  expect(filled[0]).toContain('is it worth it?')
+  expect(sent[0]).toContain('> Heads up · We turned on caching')
+  expect(sent[0]).toContain('is it worth it?')
   expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -308,16 +295,9 @@ test('a failed explanation keeps the note and says so', async ($, on) => {
   await ui.unmount()
 })
 
-test('a prompt box that refuses the note keeps it and says so', async ($, on) => {
+test('a dropped note prompt keeps the note', async ($, on) => {
   const { clock } = world(on)
-  const toasts: string[] = []
-  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
-  on('prompt.fill', () => ({ isFilled: false }))
-  on('ui.toast', ($, e) => {
-    toasts.push(JSON.stringify(e))
-
-    return { value: undefined } as never
-  })
+  on('prompt.submit', () => ({ drop: 'blocked' }))
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-know' })
   await ui.press({ key: 'know-toggle' })
@@ -328,7 +308,6 @@ test('a prompt box that refuses the note keeps it and says so', async ($, on) =>
 
   await ui.press({ key: 'note-1' })
   await ui.press({ key: 'note-submit-1' })
-  expect(toasts.join()).toContain("didn't take the note")
   expect(await ui.find({ type: 'Text', text: /K1/ })).toBeDefined()
   await ui.unmount()
 })

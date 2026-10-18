@@ -8,6 +8,7 @@ export const RULES = `# Session panel: decisions and delegation
 ## Decisions
 - When a question needs the user's choice, call the \`mcp__${PLUGIN}__decisions\` tool instead of asking in chat. The user answers in the session panel and submits the answers back as a prompt.
 - D<n> (D1, D2, …) names one of those decisions, in your text and in the user's.
+- Once the user settles a decision, in the panel or in chat, remove it with the tool.
 
 ## Delegation (main conversation)
 - You implement the work yourself by default.

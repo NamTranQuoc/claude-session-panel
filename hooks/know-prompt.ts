@@ -194,10 +194,10 @@ export const skipsAfter = (ignored: number) => (ignored <= IGNORED_FREE ? 0 : Ma
 // The step-level part of a check's gate; the rest (flag, pane, open notes, skips) the hook reads.
 export const isCheckStep = (index: number) => index > 0 && index % CHECK_EVERY === 0
 
-// Text the composer would act on: `@` opening a file mention, `ultra…` keywords.
+// Text a sent prompt may act on: `@` opening a file mention, `ultra…` keywords.
 const inert = (text: string) => text.replace(/(^|\s)@(?=\S)/g, '$1＠').replace(/(ultra)(code|plan|review|think)/gi, '$1-$2')
 
-// What Submit puts in the prompt box: the note quoted, then the user's reply.
+// What Submit sends: the note quoted, then the user's reply.
 export const noteDraft = (note: { tag: string; line: string; explanation: string }, reply: string) => {
   const quoted = [`${note.tag} · ${note.line}`, ...(note.explanation ? ['', ...note.explanation.split('\n')] : [])]
     .map(l => (l ? `> ${l}` : '>'))

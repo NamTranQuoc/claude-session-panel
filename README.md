@@ -74,7 +74,7 @@ Requirements:
   - **Not relevant** / **Dismiss**: the note leaves.
   - **Couldn't understand**: the explanation is rewritten in plainer words (one more fork).
   - **Explain**: shown instead when the check wrote no explanation (one more fork).
-  - Type a reply in the field, Enter to save it, then **Submit**: the note, quoted, and your reply go into the prompt box for you to send. With text already in the prompt box, nothing is replaced; send or clear it first.
+  - Type a reply in the field, Enter to save it, then **Submit**: the note, quoted, and your reply go to the main agent as one prompt, as Decisions sends its answers. The note then leaves the list as known.
 - At most 3 unanswered notes; at 3, checks stop. One note per turn; a line already offered or known is not offered again.
 - A note you have seen (the Know tab was open) and passed by with 2 prompts is dropped as ignored. Three or more ignored in a row make the next checks skip: 1, then 2, 4, 8, up to 16. Any answer resets that.
 - Under the toggle: the last check's outcome and its tokens (`in`, `cached`, `written`, `out`).
@@ -86,6 +86,7 @@ Requirements:
 The panel adds a fixed section to the system prompt of every session with a terminal (not `-p` or SDK runs, which have no panel):
 
 - Questions that need your choice go to Decisions.
+- A decision you settle, in the panel or in chat, is removed from the list.
 - The main agent implements the work itself by default.
 - It splits the work into tasks for subagents only when you decide to delegate it.
 

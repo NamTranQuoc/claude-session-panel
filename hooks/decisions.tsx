@@ -151,12 +151,15 @@ export const registerDecisions = (on: On) => {
           )
         })}
         {selected ? (
-          <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="claude" paddingX={1}>
-            <Text bold>{`D${selected.id}  ${selected.title}`}</Text>
-            <Markdown text={selected.detail} />
-            {(selected.options ?? []).map((o, i) => (
-              <Text>{`${i + 1}. ${o}`}</Text>
-            ))}
+          <Box flexDirection="column" marginTop={1}>
+            <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+              <Text bold>{`D${selected.id}  ${selected.title}`}</Text>
+              <Markdown text={selected.detail} />
+              {(selected.options ?? []).map((o, i) => (
+                <Text>{`${i + 1}. ${o}`}</Text>
+              ))}
+            </Box>
+            {/* Outside the bordered box: the host sizes an Input to the pane's full width. */}
             {isLocked || !Input ? (
               <Text dimColor>
                 {selected.answer ? `answer: ${selected.answer} · ` : ''}

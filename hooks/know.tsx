@@ -19,11 +19,7 @@ export const knowLive = {
   last: undefined as { outcome: string; usage?: SessionPanelUsage } | undefined,
 }
 
-const BOX_BUSY = 'Your prompt box has text in it. Send or clear it, then press Submit again.'
-const BOX_DIALOG = 'A dialog has the keyboard. Answer it, then press Submit again.'
-const BOX_REFUSED = "The prompt box didn't take the note. Press Submit to try again."
-
-// The Know tab: notes a side check found worth knowing, each answered here or passed to the prompt box.
+// The Know tab: notes a side check found worth knowing, each answered here or sent to the main agent.
 export const registerKnow = (on: On) => {
   // The on/off pick of the last session, kept in the plugin's store; off until the user turns it on.
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -75,13 +71,13 @@ export const registerKnow = (on: On) => {
       if (!text) $.ui.toast("Couldn't write that explanation.")
       await patch(note.id, { isExplaining: false, ...(text ? { explanation: text } : {}) })
     }
-    // Submit hands the note and the reply to the prompt box; the user reads it there and sends it.
+    // Submit sends the note and the reply to the main agent, as Decisions sends its answers. A dropped
+    // prompt keeps the note: the host shows the drop's reason.
     const submit = async (note: SessionPanelNote) => {
-      const box = await $.prompt.read().catch(() => undefined)
-      if (box?.text.trim()) return $.ui.toast(BOX_BUSY)
-      const filled = await $.prompt.fill({ text: `${noteDraft(note, note.draft)}\n\n`, mode: 'replace' }).catch(() => undefined)
-      if (filled?.isFilled) return close(note, true)
-      $.ui.toast(filled?.refusal === 'dialog' ? BOX_DIALOG : BOX_REFUSED)
+      if (live.isMainRunning) return
+      const sent = await $.prompt.submit({ text: noteDraft(note, note.draft) }).catch(() => undefined)
+      if (!sent) return $.ui.toast("Couldn't send the note. Press Submit to try again.")
+      if (!sent.drop) await close(note, true)
     }
 
     const last = knowLive.last
@@ -127,25 +123,28 @@ export const registerKnow = (on: On) => {
           )
         })}
         {selected ? (
-          <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="claude" paddingX={1}>
-            <Text bold>{`K${selected.id}  ${selected.tag}`}</Text>
-            <Text wrap="wrap">{selected.line}</Text>
-            {selected.isExplaining ? (
-              <Text dimColor>writing the explanation…</Text>
-            ) : selected.explanation ? (
-              <Markdown text={selected.explanation} />
-            ) : (
-              <Button key={`note-explain-${selected.id}`} label="Explain" onPress={() => void explain(selected)} />
-            )}
-            <Box flexWrap="wrap" marginTop={1}>
-              <Button key={`note-understood-${selected.id}`} label="Understood" onPress={() => void close(selected, true)} />
-              <Button key={`note-knew-${selected.id}`} label="Knew this already" onPress={() => void close(selected, true)} />
-              <Button key={`note-irrelevant-${selected.id}`} label="Not relevant" onPress={() => void close(selected, false)} />
-              {selected.explanation && !selected.isExplaining ? (
-                <Button key={`note-simpler-${selected.id}`} label="Couldn't understand" onPress={() => void explain(selected)} />
-              ) : null}
-              <Button key={`note-dismiss-${selected.id}`} label="Dismiss" onPress={() => void close(selected, false)} />
+          <Box flexDirection="column" marginTop={1}>
+            <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+              <Text bold>{`K${selected.id}  ${selected.tag}`}</Text>
+              <Text wrap="wrap">{selected.line}</Text>
+              {selected.isExplaining ? (
+                <Text dimColor>writing the explanation…</Text>
+              ) : selected.explanation ? (
+                <Markdown text={selected.explanation} />
+              ) : (
+                <Button key={`note-explain-${selected.id}`} label="Explain" onPress={() => void explain(selected)} />
+              )}
+              <Box flexWrap="wrap" marginTop={1}>
+                <Button key={`note-understood-${selected.id}`} label="Understood" onPress={() => void close(selected, true)} />
+                <Button key={`note-knew-${selected.id}`} label="Knew this already" onPress={() => void close(selected, true)} />
+                <Button key={`note-irrelevant-${selected.id}`} label="Not relevant" onPress={() => void close(selected, false)} />
+                {selected.explanation && !selected.isExplaining ? (
+                  <Button key={`note-simpler-${selected.id}`} label="Couldn't understand" onPress={() => void explain(selected)} />
+                ) : null}
+                <Button key={`note-dismiss-${selected.id}`} label="Dismiss" onPress={() => void close(selected, false)} />
+              </Box>
             </Box>
+            {/* Outside the bordered box: the host sizes an Input to the pane's full width. */}
             {Input ? (
               <Input
                 key={`note-input-${selected.id}`}
