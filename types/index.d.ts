@@ -39,7 +39,9 @@ export type SessionPanelDecision = {
   detail: string
   options?: string[]
   answer?: string
-  sentAt?: number
+  // Times the answer was saved or the item replaced: part of the answer Input's key, so each save draws a
+  // fresh field that shows the saved text (the host empties a field after Enter).
+  saves?: number
 }
 
 export type SessionPanelNoteTag = 'You should know' | 'Heads up'
@@ -59,6 +61,8 @@ export type SessionPanelNote = {
   promptsPast: number
   // The user's reply, saved from the Input; Submit puts it in the prompt box under the note.
   draft: string
+  // Times the reply was saved: part of the reply Input's key, as a decision's `saves`.
+  saves?: number
   isExplaining?: boolean
 }
 

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { SessionPanelDecision, SessionPanelTab } from '../types'
-import { describeDecision, fit, listDecisions, live, PANE, PLUGIN } from './shared'
+import { describeDecision, fit, inert, listDecisions, live, PANE, PLUGIN, quote } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const decisions = atom({ plugin: 'session-panel', key: 'decisions' } as const, [] as SessionPanelDecision[])
@@ -13,6 +13,11 @@ export const TOOL = 'decisions'
 export const TOOL_NAME = `mcp__${PLUGIN}__${TOOL}`
 // D<n> as a word: not part of a longer name (`D3.js`, `AD3`, `D3_x`).
 const MENTION = /(?<![\w.])D(\d+)(?![\w.])/g
+
+// Text typed into an item's field and not saved with Enter, by id, so Submit sends it too. Not in the
+// atom: a change of the drawn `value` resets the field the person is typing in.
+const typed = new Map<number, string>()
+const answerOf = (d: SessionPanelDecision) => typed.get(d.id) ?? d.answer ?? ''
 
 export type DecisionsInput = {
   upsert?: { id?: number; title: string; detail: string; options?: string[] }[]
@@ -46,7 +51,8 @@ export const INPUT_SCHEMA = {
   },
 }
 
-// One `decisions` call over the list: removals first, then upserts. A replaced item loses its answer.
+// One `decisions` call over the list: removals first, then upserts. A replaced item loses its answer and
+// counts as a save, so its field starts empty.
 export const applyDecisions = (list: readonly SessionPanelDecision[], nextId: number, input: DecisionsInput) => {
   const remove = new Set(input.remove ?? [])
   let result = list.filter(d => !remove.has(d.id))
@@ -54,7 +60,7 @@ export const applyDecisions = (list: readonly SessionPanelDecision[], nextId: nu
   for (const item of input.upsert ?? []) {
     const fields = { title: item.title, detail: item.detail, options: item.options?.length ? item.options : undefined }
     if (item.id !== undefined && result.some(d => d.id === item.id)) {
-      result = result.map(d => (d.id === item.id ? { id: d.id, ...fields } : d))
+      result = result.map(d => (d.id === item.id ? { id: d.id, ...fields, saves: (d.saves ?? 0) + 1 } : d))
     } else {
       result = [...result, { id, ...fields }]
       id += 1
@@ -69,13 +75,24 @@ export const applyDecisions = (list: readonly SessionPanelDecision[], nextId: nu
 export const formatAnswer = (d: SessionPanelDecision) => {
   const answer = (d.answer ?? '').trim()
   const n = /^(\d+)\b[.):]?\s*/.exec(answer)
-  if (!n || d.options?.[Number(n[1]) - 1] === undefined) return `- D${d.id}: ${answer}`
+  if (!n || d.options?.[Number(n[1]) - 1] === undefined) return answer
   const rest = answer.slice(n[0].length).trim()
 
-  return `- D${d.id}: option ${n[1]}${rest ? `. ${rest}` : ''}`
+  return `option ${n[1]}${rest ? `. ${rest}` : ''}`
 }
 
-const isReady = (d: SessionPanelDecision) => Boolean(d.answer?.trim()) && d.sentAt === undefined
+// What Submit sends: each decision quoted whole, as the agent wrote it, then the user's answer, so the
+// answer still reads once the conversation is compacted.
+export const answersDraft = (answered: readonly SessionPanelDecision[]) =>
+  [
+    "Answers to open decisions. Each decision is quoted as the assistant wrote it through the decisions tool; the line after it is the user's answer.",
+    ...answered.map(d => {
+      const options = (d.options ?? []).map((o, i) => `${i + 1}. ${o}`)
+      const quoted = quote([`D${d.id} · ${d.title}`, '', d.detail, ...(options.length ? ['', ...options] : [])].join('\n'))
+
+      return `${inert(quoted)}\n\nAnswer to D${d.id}: ${formatAnswer(d)}`
+    }),
+  ].join('\n\n')
 
 // The Decisions tab, the `decisions` tool the main agent keeps the list with, and D<n> mentions.
 export const registerDecisions = (on: On) => {
@@ -84,7 +101,12 @@ export const registerDecisions = (on: On) => {
     // main agent's user turns through D<n> mentions without the main agent having written it.
     if (e.agentId !== undefined) return { deny: 'Only the main conversation keeps the decisions list.' }
     const input = e as unknown as DecisionsInput
-    const applied = applyDecisions(await read($, decisions), await read($, nextDecisionId), input)
+    const before = await read($, decisions)
+    const applied = applyDecisions(before, await read($, nextDecisionId), input)
+    // Typed text goes with the item it was typed for: a removed or replaced item drops it.
+    for (const id of [...typed.keys()]) {
+      if (applied.list.find(d => d.id === id) !== before.find(d => d.id === id)) typed.delete(id)
+    }
     await update($, nextDecisionId, () => applied.nextId)
     await update($, decisions, () => applied.list)
     // A selected item the agent removed is deselected; its draft went with it.
@@ -94,9 +116,9 @@ export const registerDecisions = (on: On) => {
   })
 
   // A prompt naming D<n> carries those items, so the main agent reads what the user points at. The
-  // panel's own Submit too: after a compaction `D3: option 2` means nothing without the item.
+  // panel's own prompts are skipped: Submit quotes each decision it answers in its text.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command) return next(e)
+    if (e.command || (e.origin.kind === 'plugin' && e.origin.name === PLUGIN)) return next(e)
     const ids = new Set([...e.text.matchAll(MENTION)].map(m => Number(m[1])))
     const named = ids.size === 0 ? [] : (await read($, decisions)).filter(d => ids.has(d.id))
     if (named.length === 0) return next(e)
@@ -114,18 +136,40 @@ export const registerDecisions = (on: On) => {
     const list = await read($, decisions)
     const selectedId = await read($, decisionId)
     const selected = list.find(d => d.id === selectedId)
-    const ready = list.filter(isReady)
+    const readyCount = list.filter(d => answerOf(d).trim()).length
     const isLocked = live.isMainRunning
 
+    // Typed text that was not saved is saved first; Submit never needs an Enter. Sent, the answered items
+    // leave the list: the prompt carries them whole. A dropped prompt keeps them (the host shows why).
     const submit = async () => {
-      const answers = (await read($, decisions)).filter(isReady)
-      if (answers.length === 0 || live.isMainRunning) return
-      const now = await $.clock.now()
-      await $.prompt.submit({ text: `Answers to open decisions:\n${answers.map(formatAnswer).join('\n')}` })
-      await update($, decisions, all => all.map(d => (answers.some(a => a.id === d.id) ? { ...d, sentAt: now } : d)))
+      if (live.isMainRunning) return
+      const pending = new Map(typed)
+      typed.clear()
+      let saved: SessionPanelDecision[] = []
+      await update($, decisions, all => {
+        saved = all.map(d => (pending.has(d.id) ? { ...d, answer: pending.get(d.id), saves: (d.saves ?? 0) + 1 } : d))
+
+        return saved
+      })
+      const answered = saved.filter(d => d.answer?.trim())
+      if (answered.length === 0) return $.ui.toast("No answers to send: type one in a decision's field.")
+      const sent = await $.prompt.submit({ text: answersDraft(answered) }).catch(() => undefined)
+      if (!sent) return $.ui.toast("Couldn't send the answers. Press Submit to try again.")
+      if (sent.drop) return
+      const ids = new Set(answered.map(d => d.id))
+      await update($, decisions, all => all.filter(d => !ids.has(d.id)))
+      await update($, decisionId, id => (ids.has(id) ? 0 : id))
     }
-    const answer = (id: number, value: string) =>
-      update($, decisions, all => all.map(d => (d.id === id ? { ...d, answer: value, sentAt: undefined } : d)))
+    const save = async (id: number, value: string) => {
+      typed.delete(id)
+      await update($, decisions, all => all.map(d => (d.id === id ? { ...d, answer: value, saves: (d.saves ?? 0) + 1 } : d)))
+    }
+    // Redrawn only when the item turns answered or unanswered, for its mark and the count.
+    const edit = (d: SessionPanelDecision, value: string) => {
+      const wasAnswered = Boolean(answerOf(d).trim())
+      typed.set(d.id, value)
+      if (wasAnswered !== Boolean(value.trim())) $.ui.invalidate('ui.render')
+    }
 
     if (list.length === 0) {
       return (
@@ -139,7 +183,7 @@ export const registerDecisions = (on: On) => {
     return (
       <Box flexDirection="column">
         {list.map(d => {
-          const mark = d.sentAt !== undefined ? '↑' : d.answer?.trim() ? '●' : ' '
+          const mark = answerOf(d).trim() ? '●' : ' '
           const isSelected = d.id === selected?.id
 
           return (
@@ -162,23 +206,26 @@ export const registerDecisions = (on: On) => {
             {/* Outside the bordered box: the host sizes an Input to the pane's full width. */}
             {isLocked || !Input ? (
               <Text dimColor>
-                {selected.answer ? `answer: ${selected.answer} · ` : ''}
+                {answerOf(selected) ? `answer: ${answerOf(selected)} · ` : ''}
                 {isLocked ? 'main agent is running' : 'this surface has no text input'}
               </Text>
             ) : (
+              // The host empties a field once Enter is handled, before or after the redraw that brings
+              // the saved `value`; a new key per save draws a fresh field that keeps it.
               <Input
-                key={`decision-input-${selected.id}`}
+                key={`decision-input-${selected.id}-${selected.saves ?? 0}`}
                 placeholder={selected.options?.length ? 'Option number and/or your answer' : 'Your answer'}
                 value={selected.answer ?? ''}
                 rows={3}
                 submitLabel="Save"
-                onSubmit={(value: string) => void answer(selected.id, value)}
+                onInput={(value: string) => edit(selected, value)}
+                onSubmit={(value: string) => void save(selected.id, value)}
               />
             )}
           </Box>
         ) : null}
         <Box marginTop={1} justifyContent="space-between">
-          <Text dimColor>{`${ready.length} answer${ready.length === 1 ? '' : 's'} ready`}</Text>
+          <Text dimColor>{`${readyCount} answer${readyCount === 1 ? '' : 's'} ready`}</Text>
           {isLocked ? (
             <Text dimColor>main agent is running</Text>
           ) : (

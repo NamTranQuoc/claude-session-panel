@@ -1,6 +1,7 @@
 import type { ModelForkResult } from 'claude-code'
 
 import type { SessionPanelNoteTag } from '../types'
+import { inert, quote } from './shared'
 
 // A check runs on the main loop's step 6, 12, 18, … of a turn: short turns are never checked.
 export const CHECK_EVERY = 6
@@ -194,14 +195,9 @@ export const skipsAfter = (ignored: number) => (ignored <= IGNORED_FREE ? 0 : Ma
 // The step-level part of a check's gate; the rest (flag, pane, open notes, skips) the hook reads.
 export const isCheckStep = (index: number) => index > 0 && index % CHECK_EVERY === 0
 
-// Text a sent prompt may act on: `@` opening a file mention, `ultra…` keywords.
-const inert = (text: string) => text.replace(/(^|\s)@(?=\S)/g, '$1＠').replace(/(ultra)(code|plan|review|think)/gi, '$1-$2')
-
 // What Submit sends: the note quoted, then the user's reply.
 export const noteDraft = (note: { tag: string; line: string; explanation: string }, reply: string) => {
-  const quoted = [`${note.tag} · ${note.line}`, ...(note.explanation ? ['', ...note.explanation.split('\n')] : [])]
-    .map(l => (l ? `> ${l}` : '>'))
-    .join('\n')
+  const quoted = quote([`${note.tag} · ${note.line}`, ...(note.explanation ? ['', note.explanation] : [])].join('\n'))
 
   return [inert(`Here is a note offered by a side agent:\n\n${quoted}`), reply.trim()].filter(Boolean).join('\n\n')
 }

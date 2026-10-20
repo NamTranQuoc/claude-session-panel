@@ -27,7 +27,7 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const active = await read($, tab)
     const chatCount = (await read($, chats)).length
-    const openCount = (await read($, decisions)).filter(d => d.sentAt === undefined).length
+    const openCount = (await read($, decisions)).length
     const noteCount = (await read($, notes)).length
     const body = await next(e)
     // Opening Know shows its notes: from then on, prompts that pass them by count (`turn.start`).
@@ -147,7 +147,7 @@ export const register: Register = on => {
 
       const seen = strings(await $.store.get('knowSeen'))
       const known = strings(await $.store.get('knowKnown'))
-      const open = (await read($, decisions)).filter(d => d.sentAt === undefined).map(d => `D${d.id}: ${d.title}`)
+      const open = (await read($, decisions)).map(d => `D${d.id}: ${d.title}`)
       knowLive.last = { outcome: 'checking…' }
       $.ui.invalidate('ui.render')
       const reply = await $.model.fork({ prompt: knowPrompt(seen, known, open) }).catch(() => undefined)

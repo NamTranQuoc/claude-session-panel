@@ -34,7 +34,7 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
 - **Pane.** The Pane's `ui.render` hooks nest in registration order. `register.tsx` registers first, so its hook is outermost: it draws the tab bar and `next(e)` below it. Each tab's hook returns its body when `tab` is its own, else `next(e)`.
 - **State.**
   - `$.state` (atoms) holds `tab`, `chats`, `chatId`, `nextChatId`, `decisions`, `decisionId`, `nextDecisionId`, `agentModel`, `agentEffort`, `notes`, `noteId`, `nextNoteId`, `isKnowOn`, `spend`. A hot reload keeps them; a new session starts empty. `update` redraws the readers.
-  - Module variables hold the rest (`repos`, `agents`, `usage`, `live`, `knowLive`, the subagent effort map); a reload restarts them and the next tick or event refills them.
+  - Module variables hold the rest (`repos`, `agents`, `usage`, `live`, `knowLive`, the subagent effort map, the `typed` text of Decisions and Know); a reload restarts them and the next tick or event refills them.
   - A render hook never writes state (the host refuses it): writes happen in handlers and other events.
   - `$.store` keeps `agentModel` / `agentEffort` between sessions: the SUBAGENTS dropdowns write both the atom and the store; `session.start` in `subagents.ts` (every session, `-p` included) loads the store into the atoms, a value outside the lists ignored.
   - `$.store` also keeps the Know check's `knowOn`, `knowSeen` and `knowKnown` (50 lines each), `knowIgnored` and `knowSkips`.
@@ -62,18 +62,22 @@ A Claude Code mod (function hooks, not a command-hooks plugin). One hooks module
   - Not answered → `notice`, and the question goes back into `draft`. A chat closed while asking drops the reply.
 - **Decisions.**
   - The tool refuses a call from a subagent (`e.agentId` set) with `deny`.
-  - The tool `mcp__session-panel__decisions` (registered with `isDeferred: false`) takes `{ upsert?, remove? }`; `applyDecisions` removes, then upserts. An upsert without `id`, or with an unknown one, takes `nextDecisionId`, so a number is never reused. Replacing an item clears its answer. The result lists the open items.
+  - The tool `mcp__session-panel__decisions` (registered with `isDeferred: false`) takes `{ upsert?, remove? }`; `applyDecisions` removes, then upserts. An upsert without `id`, or with an unknown one, takes `nextDecisionId`, so a number is never reused. Replacing an item clears its answer and its typed text, and adds one to `saves`. The result lists the open items.
   - A selected item that disappears is deselected.
   - `live.isMainRunning` (`turn.start` / `turn.complete` on the main loop) hides the answer `Input` and **Submit**.
-  - Submit sends the saved answers through `$.prompt.submit` and stamps `sentAt`. `formatAnswer` sends a leading option number as `option <n>`, never the option's text: text the agent wrote does not come back as the user's words.
-  - `prompt.submit` attaches the items a prompt names (`MENTION`: `D<n>` not inside a longer word or before `.`) as `context`, labelled as assistant-written data. The panel's own Submit goes through it too, so `D3: option 2` keeps its title and options after a compaction.
+  - Answer fields: the host keeps a field's text by `key` and prefers it to `value`, drops it when a draw brings another `value`, and empties it once an Enter is handled, which can land after the redraw that brings the saved answer. So:
+    - `onInput` keeps typed text in the module map `typed`, never the atom (a new `value` would reset the field mid-typing); it redraws only when an item turns answered or unanswered.
+    - Enter saves the answer and adds one to `saves`; the `Input` key is `decision-input-<id>-<saves>`, so each save draws a fresh field that shows the saved text.
+  - Submit saves the typed text first, then sends `answersDraft` through `$.prompt.submit`: each answered decision quoted whole (`@` and `ultra…` made inert), then `Answer to D<n>: …`. `formatAnswer` sends a leading option number as `option <n>`, never the option's text: text the agent wrote does not come back as the user's words. Sent, those items leave the list; a dropped prompt keeps them (the host shows the reason), a rejection is a toast, and no answer at all is a toast.
+  - `prompt.submit` attaches the items a prompt names (`MENTION`: `D<n>` not inside a longer word or before `.`) as `context`, labelled as assistant-written data. The panel's own prompts (`origin` this plugin) are skipped: Submit's text already quotes them.
   - The answer `Input` is `rows={3}`: a long answer wraps instead of scrolling out of sight. It sits below the bordered box, as in Know: the host sizes an `Input` to the pane's full width, so inside a border and padding the field overflows and cuts its text.
 - **Know.**
   - `turn.step` on the main loop starts a check beside the request (never awaited) when: `isCheckStep(index)` (6, 12, 18 …), no check running, no note offered this turn (`knowLive.offeredTurn`), `isKnowOn`, fewer than `MAX_OPEN_NOTES` (3) notes, `$.ui.panes()` has the pane placed and shown, and `knowSkips` is 0 (else it is decremented).
   - The check: `$.model.fork` with `knowPrompt(knowSeen, knowKnown, open decision titles)`. `parseNote` reads `learn: none` (the word alone) or `learn` / `tag` / `explain`, strips escape sequences, and cuts the explanation at 4000 characters; a line over 240 characters is unparsable. `checkOutcome` then names the result: the fork's `reason`, `none` / `unparsable`, `duplicate` (a line in `knowSeen` or `knowKnown` by `noteKey`), `off` (turned off while the fork ran), `stale` (`live.turnId` moved on), `full` (3 notes), else `shown`, and the note joins `notes` and `knowSeen`. `knowLive.last` keeps the outcome and usage for the tab's header.
   - A note is `isSeen` once the Know tab is opened with it (the tab bar press), or when it arrives while Know is on show. `turn.start` on the main loop adds one to `promptsPast` of each seen note; at `IGNORED_AFTER_PROMPTS` (2) it is dropped, `knowIgnored` grows and `knowSkips` = `skipsAfter(knowIgnored)` (0 up to 2, then 1, 2, 4 … 16). Any answer resets both. A store failure there is caught: the turn starts as it would.
   - Answers: Understood / Knew this already add the line to `knowKnown`; Not relevant / Dismiss only remove it. Couldn't understand and Explain fork `explainNotePrompt`.
-  - Submit, as in Decisions: `$.prompt.submit` with `noteDraft` (the note quoted, `@` and `ultra…` made inert, then the reply); sent, the note is closed as known; a dropped prompt keeps it (the host shows the reason), a rejection is a toast. The answer `Input` and Submit sit below the bordered box. Hidden while the main agent runs.
+  - The reply field works as a decision's: typed text in the module map `typed`, Enter saves `draft` and adds one to `saves`, key `note-input-<id>-<saves>`.
+  - Submit, as in Decisions: the typed reply saved first, then `$.prompt.submit` with `noteDraft` (the note quoted, `@` and `ultra…` made inert, then the reply); sent, the note is closed as known; a dropped prompt keeps it (the host shows the reason), a rejection is a toast. The answer `Input` and Submit sit below the bordered box. Hidden while the main agent runs.
 - **System prompt.** `prompt.compose` appends the section `session-panel:rules` (`RULES`, fixed text) with scope `session`, except for `teammate`, `bare`, `print` and `sdk-preset` prompts. Its text never changes mid-session, so it never moves the prompt cache.
 
 ## Add a feature
@@ -104,6 +108,7 @@ Tests run with no process or network. `$.ui.mount` needs `mock.clock(on)` becaus
 - The dock needs 110+ columns (144 when opened unasked); `/panel` asks explicitly.
 - The `tool.call`, `prompt.submit`, `agent.spawn` and `classic.PreModelSwitch` hooks have no `.catch`: one that throws is skipped and the call goes on as it was; the `decisions` tool then has no answer and its call fails.
 - Where an organization manages Claude Code, `prompt.compose` and `classic.PreModelSwitch` do not reach an installed plugin: the rules section and the no-prompt model switch are then absent.
+- Text typed but not saved lives in a module map: after a hot reload the field may still show it, but Submit sends only what was saved.
 - While an `Input` has focus the host draws `⏎ <submitLabel>` beside it, and `· \⏎ new line` when `rows` ≥ 2 and the pane is wide enough; no prop hides it.
 - The `gh` calls assume `gh` is signed in; a refresh costs one `gh pr view` per repo it reads.
 

@@ -64,15 +64,15 @@ test('the decisions tool keeps a numbered list the pane draws', async ($, on) =>
   await ui.press({ key: 'decision-1' })
   expect(await ui.find({ type: 'Text', text: '2. SQLite' })).toBeDefined()
   // Several rows, so a long answer stays readable while typed.
-  expect((await ui.find({ type: 'Input', key: 'decision-input-1' }))?.props).toMatchObject({ rows: 3 })
+  expect((await ui.find({ type: 'Input', key: 'decision-input-1-0' }))?.props).toMatchObject({ rows: 3 })
 
   await ui.press({ key: 'decision-2' })
   expect(await ui.find({ type: 'Text', text: /^1\. / })).toBeUndefined()
-  expect(await ui.find({ type: 'Input', key: 'decision-input-2' })).toBeDefined()
+  expect(await ui.find({ type: 'Input', key: 'decision-input-2-0' })).toBeDefined()
 
   // D2 removed while selected: deselected, and its number never comes back.
   await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-2', remove: [2], upsert: [{ title: 'Later', detail: 'x' }] } as never)
-  expect(await ui.find({ type: 'Input', key: 'decision-input-2' })).toBeUndefined()
+  expect(await ui.find({ type: 'Input', key: 'decision-input-2-0' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /D3 {2}Later/ })).toBeDefined()
   await ui.unmount()
 })
@@ -86,7 +86,7 @@ test('answers and Submit lock while the main agent runs', async ($, on) => {
   await ui.press({ key: 'decision-1' })
 
   await $.turn.start({ text: 'go', turnId: 'turn-1' } as never)
-  expect(await ui.find({ type: 'Input', key: 'decision-input-1' })).toBeUndefined()
+  expect(await ui.find({ type: 'Input', key: 'decision-input-1-0' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'decisions-submit' })).toBeUndefined()
   await ui.unmount()
 })
@@ -105,7 +105,7 @@ test('a prompt naming D<n> carries that decision', async ($, on) => {
   expect(seen?.join('\n')).toContain('1. Postgres')
 })
 
-test('Submit sends the answers to the main agent', async ($, on) => {
+test('Submit sends each answered decision whole and takes it off the list', async ($, on) => {
   mock.clock(on)
   const sent: string[] = []
   on('prompt.submit', ($, e) => {
@@ -115,17 +115,59 @@ test('Submit sends the answers to the main agent', async ($, on) => {
   })
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-decisions' })
-  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'd', options: ['Postgres'] }] } as never)
+  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'Where to keep @notes', options: ['Postgres'] }, { title: 'Later', detail: 'd' }] } as never)
   await ui.press({ key: 'decision-1' })
-  await ui.input({ key: 'decision-input-1', text: '1 for now' })
+  await ui.input({ key: 'decision-input-1-0', text: '1 for now' })
 
   await ui.press({ key: 'decisions-submit' })
-  expect(sent[0]).toContain('- D1: option 1. for now')
-  expect(await ui.find({ type: 'Text', text: /↑ D1/ })).toBeDefined()
+  expect(sent[0]).toContain('> D1 · Storage\n>\n> Where to keep ＠notes\n>\n> 1. Postgres\n\nAnswer to D1: option 1. for now')
+  expect(sent[0]).not.toContain('D2')
+  expect(await ui.find({ type: 'Text', text: /D1 {2}Storage/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /D2 {2}Later/ })).toBeDefined()
   await ui.unmount()
 })
 
-test("the panel's own Submit carries the decisions it answers", async ($, on) => {
+test('a saved answer stays in its field, and typed text is sent without Enter', async ($, on) => {
+  mock.clock(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-decisions' })
+  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'd' }, { title: 'Cache', detail: 'd' }] } as never)
+  await ui.press({ key: 'decision-1' })
+  await ui.input({ key: 'decision-input-1-0', text: 'keep it local' })
+  expect((await ui.find({ type: 'Input', key: 'decision-input-1-1' }))?.props).toMatchObject({ value: 'keep it local' })
+
+  await ui.press({ key: 'decision-2' })
+  await ui.input({ key: 'decision-input-2-0', text: 'redis', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: '2 answers ready' })).toBeDefined()
+  await ui.press({ key: 'decisions-submit' })
+  expect(sent[0]).toContain('Answer to D1: keep it local')
+  expect(sent[0]).toContain('Answer to D2: redis')
+  expect(await ui.find({ type: 'Text', text: 'No open decisions.' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a dropped Submit keeps the decisions and their answers', async ($, on) => {
+  mock.clock(on)
+  on('prompt.submit', () => ({ drop: 'blocked' }))
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-decisions' })
+  await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'd' }] } as never)
+  await ui.press({ key: 'decision-1' })
+  await ui.input({ key: 'decision-input-1-0', text: 'local', kind: 'change' })
+
+  await ui.press({ key: 'decisions-submit' })
+  expect(await ui.find({ type: 'Text', text: /● D1/ })).toBeDefined()
+  expect((await ui.find({ type: 'Input', key: 'decision-input-1-1' }))?.props).toMatchObject({ value: 'local' })
+  await ui.unmount()
+})
+
+test("the panel's own prompts carry no decisions beside them", async ($, on) => {
   let seen: readonly string[] | undefined
   on('prompt.submit', ($, e) => {
     seen = e.context
@@ -134,9 +176,8 @@ test("the panel's own Submit carries the decisions it answers", async ($, on) =>
   })
   await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: [{ title: 'Storage', detail: 'Where to keep it', options: ['Postgres'] }] } as never)
 
-  await $.prompt.submit({ text: 'Answers to open decisions:\n- D1: option 1', wait: false, origin: { kind: 'plugin', name: 'session-panel' } } as never)
-  expect(seen?.join('\n')).toContain('D1: Storage')
-  expect(seen?.join('\n')).toContain('1. Postgres')
+  await $.prompt.submit({ text: 'Answer to D1: option 1', wait: false, origin: { kind: 'plugin', name: 'session-panel' } } as never)
+  expect(seen).toBeUndefined()
 })
 
 test('the system prompt carries the panel rules, the same text each time', async ($, on) => {
@@ -206,10 +247,10 @@ test('subagent spawns take the pane picks unless the call names its own', async 
 
 test('a submitted answer names its option by number only', () => {
   const d = { id: 3, title: 't', detail: 'd', options: ['Postgres', 'SQLite'] }
-  expect(formatAnswer({ ...d, answer: '2' })).toBe('- D3: option 2')
-  expect(formatAnswer({ ...d, answer: '2. keep it local' })).toBe('- D3: option 2. keep it local')
-  expect(formatAnswer({ ...d, answer: '7 cows' })).toBe('- D3: 7 cows')
-  expect(formatAnswer({ id: 4, title: 't', detail: 'd', answer: 'free text' })).toBe('- D4: free text')
+  expect(formatAnswer({ ...d, answer: '2' })).toBe('option 2')
+  expect(formatAnswer({ ...d, answer: '2. keep it local' })).toBe('option 2. keep it local')
+  expect(formatAnswer({ ...d, answer: '7 cows' })).toBe('7 cows')
+  expect(formatAnswer({ id: 4, title: 't', detail: 'd', answer: 'free text' })).toBe('free text')
 })
 
 test('D<n> mentions skip longer names', async ($, on) => {

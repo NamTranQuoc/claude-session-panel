@@ -224,10 +224,37 @@ test('Submit sends the note and the reply to the main agent', async ($, on) => {
   await $.turn.complete({ turnId: 'turn-1', reason: 'answer', answer: '' } as never)
 
   await ui.press({ key: 'note-1' })
-  await ui.input({ key: 'note-input-1', text: 'is it worth it?' })
+  await ui.input({ key: 'note-input-1-0', text: 'is it worth it?' })
   await ui.press({ key: 'note-submit-1' })
   expect(sent[0]).toContain('> Heads up · We turned on caching')
   expect(sent[0]).toContain('is it worth it?')
+  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a saved reply stays in its field, and a typed one is sent without Enter', async ($, on) => {
+  const { clock } = world(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-know' })
+  await ui.press({ key: 'know-toggle' })
+  await $.turn.start({ text: 'go', turnId: 'turn-1' } as never)
+  await step($, 6)
+  await clock.settle()
+  await $.turn.complete({ turnId: 'turn-1', reason: 'answer', answer: '' } as never)
+
+  await ui.press({ key: 'note-1' })
+  await ui.input({ key: 'note-input-1-0', text: 'first' })
+  expect((await ui.find({ type: 'Input', key: 'note-input-1-1' }))?.props).toMatchObject({ value: 'first' })
+  await ui.input({ key: 'note-input-1-1', text: 'second thought', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /● K1/ })).toBeDefined()
+  await ui.press({ key: 'note-submit-1' })
+  expect(sent[0]).toContain('second thought')
   expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
   await ui.unmount()
 })

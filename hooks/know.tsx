@@ -19,6 +19,11 @@ export const knowLive = {
   last: undefined as { outcome: string; usage?: SessionPanelUsage } | undefined,
 }
 
+// A reply typed into a note's field and not saved with Enter, by id, so Submit sends it too. Not in the
+// atom: a change of the drawn `value` resets the field the person is typing in.
+const typed = new Map<number, string>()
+const replyOf = (n: SessionPanelNote) => typed.get(n.id) ?? n.draft
+
 // The Know tab: notes a side check found worth knowing, each answered here or sent to the main agent.
 export const registerKnow = (on: On) => {
   // The on/off pick of the last session, kept in the plugin's store; off until the user turns it on.
@@ -51,6 +56,7 @@ export const registerKnow = (on: On) => {
     }
     // An answered note leaves the list; any answer ends a run of ignored notes and its skipped checks.
     const close = async (note: SessionPanelNote, isKnown: boolean) => {
+      typed.delete(note.id)
       await update($, notes, all => all.filter(n => n.id !== note.id))
       if (isKnown) {
         const known = strings(await $.store.get('knowKnown'))
@@ -71,11 +77,23 @@ export const registerKnow = (on: On) => {
       if (!text) $.ui.toast("Couldn't write that explanation.")
       await patch(note.id, { isExplaining: false, ...(text ? { explanation: text } : {}) })
     }
-    // Submit sends the note and the reply to the main agent, as Decisions sends its answers. A dropped
-    // prompt keeps the note: the host shows the drop's reason.
+    const save = async (id: number, value: string) => {
+      typed.delete(id)
+      await update($, notes, all => all.map(n => (n.id === id ? { ...n, draft: value, saves: (n.saves ?? 0) + 1 } : n)))
+    }
+    // Redrawn only when the note turns replied or not, for its mark.
+    const edit = (note: SessionPanelNote, value: string) => {
+      const wasReplied = Boolean(replyOf(note).trim())
+      typed.set(note.id, value)
+      if (wasReplied !== Boolean(value.trim())) $.ui.invalidate('ui.render')
+    }
+    // Submit sends the note and the reply to the main agent, as Decisions sends its answers; a reply not
+    // saved with Enter is saved first. A dropped prompt keeps the note: the host shows the drop's reason.
     const submit = async (note: SessionPanelNote) => {
       if (live.isMainRunning) return
-      const sent = await $.prompt.submit({ text: noteDraft(note, note.draft) }).catch(() => undefined)
+      const reply = replyOf(note)
+      if (typed.has(note.id)) await save(note.id, reply)
+      const sent = await $.prompt.submit({ text: noteDraft(note, reply) }).catch(() => undefined)
       if (!sent) return $.ui.toast("Couldn't send the note. Press Submit to try again.")
       if (!sent.drop) await close(note, true)
     }
@@ -117,7 +135,7 @@ export const registerKnow = (on: On) => {
           return (
             <Button plain key={`note-${n.id}`} onPress={() => void update($, noteId, id => (id === n.id ? 0 : n.id))}>
               <Text bold={isSelected} color={isSelected ? 'claude' : undefined}>
-                {fit(`${n.draft.trim() ? '●' : '✦'} K${n.id}  ${n.tag} · ${n.line}`, width)}
+                {fit(`${replyOf(n).trim() ? '●' : '✦'} K${n.id}  ${n.tag} · ${n.line}`, width)}
               </Text>
             </Button>
           )
@@ -146,13 +164,15 @@ export const registerKnow = (on: On) => {
             </Box>
             {/* Outside the bordered box: the host sizes an Input to the pane's full width. */}
             {Input ? (
+              // A new key per save, as in Decisions: the host empties a field once Enter is handled.
               <Input
-                key={`note-input-${selected.id}`}
+                key={`note-input-${selected.id}-${selected.saves ?? 0}`}
                 placeholder="Your reply to the main agent about this note"
                 value={selected.draft}
                 rows={3}
                 submitLabel="Save"
-                onSubmit={(value: string) => void patch(selected.id, { draft: value })}
+                onInput={(value: string) => edit(selected, value)}
+                onSubmit={(value: string) => void save(selected.id, value)}
               />
             ) : (
               <Text dimColor>this surface has no text input</Text>

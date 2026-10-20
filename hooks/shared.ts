@@ -80,6 +80,16 @@ export const paneSpend = (s: SessionPanelSpending): SessionPanelSpend =>
     unpriced: a.unpriced + b.unpriced,
   }))
 
+// Text a sent prompt may act on: `@` opening a file mention, `ultra…` keywords.
+export const inert = (text: string) => text.replace(/(^|\s)@(?=\S)/g, '$1＠').replace(/(ultra)(code|plan|review|think)/gi, '$1-$2')
+
+// Text as a Markdown quote; an empty line stays a bare `>`.
+export const quote = (text: string) =>
+  text
+    .split('\n')
+    .map(l => (l ? `> ${l}` : '>'))
+    .join('\n')
+
 export const fit = (text: string, width: number) =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text
 

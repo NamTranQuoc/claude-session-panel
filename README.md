@@ -60,8 +60,8 @@ Requirements:
 ### Decisions
 
 - The main agent adds, changes and removes items with its `decisions` tool. Each has a title, a detail and zero or more options. Subagents cannot change the list.
-- Press an item to show its detail, its options (`1.`, `2.`, …) and an answer field, several lines tall so a long answer stays readable. Type an option number, free text, or both, and press Enter to save: `●` marks an answered item.
-- **Submit** sends every saved answer to the main agent as one prompt (`D3: option 2. your text`: an option goes by its number, never its text). Each answered decision rides along as text the assistant wrote, so `option 2` still reads after the conversation is compacted. Sent items show `↑` until the agent updates or removes them.
+- Press an item to show its detail, its options (`1.`, `2.`, …) and an answer field, several lines tall so a long answer stays readable. Type an option number, free text, or both: `●` marks an answered item. Enter saves the answer, and the field keeps showing it.
+- **Submit** sends every answer, typed or saved, to the main agent as one prompt: each decision quoted whole (title, detail, options) as the assistant wrote it, then `Answer to D3: option 2. your text` (an option goes by its number, never its text). The prompt reads on its own, so it still makes sense after the conversation is compacted. Sent items leave the list; if the prompt is refused, they stay with their answers.
 - While the main agent is working, answering and Submit are locked; the list and details stay readable.
 - `D3` in your own prompt attaches that decision for the main agent, marked as text the assistant wrote. `D3.js` or `AD3` is not a mention.
 
@@ -74,7 +74,7 @@ Requirements:
   - **Not relevant** / **Dismiss**: the note leaves.
   - **Couldn't understand**: the explanation is rewritten in plainer words (one more fork).
   - **Explain**: shown instead when the check wrote no explanation (one more fork).
-  - Type a reply in the field, Enter to save it, then **Submit**: the note, quoted, and your reply go to the main agent as one prompt, as Decisions sends its answers. The note then leaves the list as known.
+  - Type a reply in the field (Enter saves it; the field keeps showing it), then **Submit**: the note, quoted, and your reply go to the main agent as one prompt, as Decisions sends its answers. The note then leaves the list as known.
 - At most 3 unanswered notes; at 3, checks stop. One note per turn; a line already offered or known is not offered again.
 - A note you have seen (the Know tab was open) and passed by with 2 prompts is dropped as ignored. Three or more ignored in a row make the next checks skip: 1, then 2, 4, 8, up to 16. Any answer resets that.
 - Under the toggle: the last check's outcome and its tokens (`in`, `cached`, `written`, `out`).
@@ -86,7 +86,7 @@ Requirements:
 The panel adds a fixed section to the system prompt of every session with a terminal (not `-p` or SDK runs, which have no panel):
 
 - Questions that need your choice go to Decisions.
-- A decision you settle, in the panel or in chat, is removed from the list.
+- Submit removes the decisions it answers; one you settle in chat, the main agent removes.
 - The main agent implements the work itself by default.
 - It splits the work into tasks for subagents only when you decide to delegate it.
 
