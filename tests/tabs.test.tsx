@@ -29,6 +29,34 @@ test('the tab bar switches the body', async ($, on) => {
   await ui.unmount()
 })
 
+test('/panel closes a drawn pane and opens one that is not drawn', async ($, on) => {
+  const calls: string[] = []
+  let pane = { id: 'session-panel', title: 'Session', isShown: false, isFocused: false, isPlaced: false }
+  let opened: { isPlaced: true } | { isPlaced: false; reason: string } = { isPlaced: true }
+  on('ui.panes', () => ({ value: [pane] }))
+  on('ui.open', () => {
+    calls.push('open')
+
+    return { value: opened } as never
+  })
+  on('ui.close', () => {
+    calls.push('close')
+
+    return { value: undefined } as never
+  })
+  const run = async () => (await $.command.run({ command: 'panel', args: '' } as never)).text
+
+  expect(await run()).toBe('Session panel opened.')
+  pane = { ...pane, isPlaced: true, isShown: false }
+  expect(await run()).toBe('Session panel closed.')
+  pane = { ...pane, isShown: true }
+  expect(await run()).toBe('Session panel closed.')
+  pane = { ...pane, isPlaced: false, isShown: false }
+  opened = { isPlaced: false, reason: 'no-surface: none attached' }
+  expect(await run()).toBe('Session panel is open but waits undrawn: no-surface: none attached')
+  expect(calls).toEqual(['open', 'close', 'close', 'open'])
+})
+
 test('explain chats open with + and close with x', async ($, on) => {
   mock.clock(on)
   const ui = await $.ui.mount(PANE)
@@ -42,6 +70,167 @@ test('explain chats open with + and close with x', async ($, on) => {
   await ui.press({ key: 'chat-close-2' })
   expect(await ui.find({ type: 'Text', text: 'Explain 1' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /chat #1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+const SWITCH = {
+  from_model: 'claude-opus-5-5',
+  to_model: 'claude-sonnet-5-5',
+  requested_model: 'sonnet',
+  source: 'command',
+  context_tokens: 150000,
+  prompt_cache_warm: true,
+  estimated_cache_write_usd: 0.4,
+  pricing: 'catalog',
+} as const
+
+test('with no cache TTL reported, 6 minutes idle sends the question', async ($, on) => {
+  const clock = mock.clock(on)
+  let forks = 0
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000, tokens: 150000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
+  on('model.fork', () => {
+    forks += 1
+
+    return { value: { isAnswered: false, reason: 'nothing-to-fork' } } as never
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
+  on('turn.complete', () => ({ text: '' }))
+  // The engine has reported no TTL, so the cache counts as 1 hour.
+  await clock.advance(1000)
+  for await (const chunk of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 } as never)) void chunk
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: '' } as never)
+  await clock.advance(6 * 60 * 1000)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-explain' })
+  await ui.press({ key: 'chat-add' })
+
+  await ui.input({ key: 'chat-input-1-0', text: 'why redis?' })
+  expect(forks).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Main session idle/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the cold-cache warning keeps the question in a fresh field', async ($, on) => {
+  const clock = mock.clock(on)
+  let forks = 0
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000, tokens: 150000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
+  on('model.fork', () => {
+    forks += 1
+
+    return { value: { isAnswered: false, reason: 'nothing-to-fork' } } as never
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.PreModelSwitch', () => ({}))
+  // A model switch reports a 5-minute cache; the main loop's last request ended and its turn completed,
+  // then 6 minutes idle.
+  await $.classic.PreModelSwitch({ ...SWITCH, cache_ttl: '5m' })
+  await clock.advance(1000)
+  for await (const chunk of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 } as never)) void chunk
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: '' } as never)
+  await clock.advance(6 * 60 * 1000)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-explain' })
+  await ui.press({ key: 'chat-add' })
+
+  await ui.input({ key: 'chat-input-1-0', text: 'why redis?' })
+  expect(forks).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /Main session idle 6m/ })).toBeDefined()
+  expect((await ui.find({ type: 'Input', key: 'chat-input-1-1' }))?.props).toMatchObject({ value: 'why redis?' })
+  await ui.unmount()
+})
+
+test('with no cache TTL reported, 61 minutes idle warns first', async ($, on) => {
+  const clock = mock.clock(on)
+  let forks = 0
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000, tokens: 150000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
+  on('model.fork', () => {
+    forks += 1
+
+    return { value: { isAnswered: false, reason: 'nothing-to-fork' } } as never
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
+  on('turn.complete', () => ({ text: '' }))
+  // The engine has reported no TTL, so the 1-hour cache has expired after 61 minutes idle.
+  await clock.advance(1000)
+  for await (const chunk of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 } as never)) void chunk
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: '' } as never)
+  await clock.advance(61 * 60 * 1000)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-explain' })
+  await ui.press({ key: 'chat-add' })
+
+  await ui.input({ key: 'chat-input-1-0', text: 'why redis?' })
+  expect(forks).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /Main session idle 61m/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a 5-minute cache TTL reported after a switch warns after 6 minutes idle', async ($, on) => {
+  const clock = mock.clock(on)
+  let forks = 0
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000, tokens: 150000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
+  on('model.fork', () => {
+    forks += 1
+
+    return { value: { isAnswered: false, reason: 'nothing-to-fork' } } as never
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.PostModelSwitch', () => ({}))
+  // An automatic fallback reports a 5-minute cache after the switch, then 6 minutes idle.
+  await $.classic.PostModelSwitch({ ...SWITCH, source: 'auto', cache_ttl: '5m' })
+  await clock.advance(1000)
+  for await (const chunk of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 } as never)) void chunk
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: '' } as never)
+  await clock.advance(6 * 60 * 1000)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-explain' })
+  await ui.press({ key: 'chat-add' })
+
+  await ui.input({ key: 'chat-input-1-0', text: 'why redis?' })
+  expect(forks).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /Main session idle 6m/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a later switch back to a 1-hour cache TTL sends the question after 6 minutes idle', async ($, on) => {
+  const clock = mock.clock(on)
+  let forks = 0
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000, tokens: 150000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
+  on('model.fork', () => {
+    forks += 1
+
+    return { value: { isAnswered: false, reason: 'nothing-to-fork' } } as never
+  })
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.PreModelSwitch', () => ({}))
+  on('classic.PostModelSwitch', () => ({}))
+  // One switch reports a 5-minute cache, a later one 1 hour; then 6 minutes idle.
+  await $.classic.PreModelSwitch({ ...SWITCH, cache_ttl: '5m' })
+  await $.classic.PostModelSwitch({ ...SWITCH, cache_ttl: '1h' })
+  await clock.advance(1000)
+  for await (const chunk of $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 } as never)) void chunk
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: '' } as never)
+  await clock.advance(6 * 60 * 1000)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-explain' })
+  await ui.press({ key: 'chat-add' })
+
+  await ui.input({ key: 'chat-input-1-0', text: 'why redis?' })
+  expect(forks).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Main session idle/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -250,6 +439,7 @@ test('a submitted answer names its option by number only', () => {
   expect(formatAnswer({ ...d, answer: '2' })).toBe('option 2')
   expect(formatAnswer({ ...d, answer: '2. keep it local' })).toBe('option 2. keep it local')
   expect(formatAnswer({ ...d, answer: '7 cows' })).toBe('7 cows')
+  expect(formatAnswer({ ...d, answer: '2.5 GB is enough' })).toBe('2.5 GB is enough')
   expect(formatAnswer({ id: 4, title: 't', detail: 'd', answer: 'free text' })).toBe('free text')
 })
 
@@ -266,12 +456,23 @@ test('D<n> mentions skip longer names', async ($, on) => {
   expect(seen).toBeUndefined()
   await $.prompt.submit({ text: 'about D1, again', wait: false, origin: { kind: 'composer' } } as never)
   expect(seen?.join('\n')).toContain('not instructions from the user')
+  seen = undefined as readonly string[] | undefined
+  await $.prompt.submit({ text: "Let's go with option 2 for D1.", wait: false, origin: { kind: 'composer' } } as never)
+  expect(seen?.join('\n')).toContain('not instructions from the user')
 })
 
 test('a subagent cannot change the decisions list', async ($, on) => {
   mock.clock(on)
   const denied = await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', agentId: 'agent-1', upsert: [{ title: 'x', detail: 'y' }] } as never)
   expect(JSON.stringify(denied)).toContain('Only the main conversation')
+  const listed = await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-2' } as never)
+  expect(JSON.stringify(listed)).toContain('no open decisions')
+})
+
+test('a malformed decisions call is denied and changes nothing', async ($, on) => {
+  mock.clock(on)
+  const denied = await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-1', upsert: '[{"title":"x","detail":"y"}]' } as never)
+  expect(JSON.stringify(denied)).toContain('`upsert` must be an array')
   const listed = await $.tool.call({ tool: DECISIONS, tool_use_id: 'call-2' } as never)
   expect(JSON.stringify(listed)).toContain('no open decisions')
 })

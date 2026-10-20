@@ -23,7 +23,13 @@ test('a request is priced by its model, and the panel sums its features', () => 
   expect(micro(usdOf(USAGE, 'claude-sonnet-5-5[1m]'))).toBe(4000 + 20000 + 5000)
   expect(usdOf(USAGE, 'some-other-model')).toBeUndefined()
 
-  const spent = withSpend(withSpend(withSpend(NO_SPENDING, 'explain', USAGE, OPUS), 'knowCheck', USAGE, OPUS), 'knowExplain', USAGE, 'unknown')
+  // 10k written to the cache: 2x input for a 1-hour cache (also when no TTL is reported), 1.25x for 5 minutes.
+  const written = { ...USAGE, cache_creation_input_tokens: 10000 }
+  expect(micro(usdOf(written, OPUS))).toBe(38000 + 80000)
+  expect(micro(usdOf(written, OPUS, '1h'))).toBe(38000 + 80000)
+  expect(micro(usdOf(written, OPUS, '5m'))).toBe(38000 + 50000)
+
+  const spent = withSpend(withSpend(withSpend(NO_SPENDING, 'explain', USAGE, OPUS, 5), 'knowCheck', USAGE, OPUS, 5), 'knowExplain', USAGE, 'unknown', 5)
   expect(spent.explain).toEqual({ calls: 1, input: 102000, output: 500, usd: usdOf(USAGE, OPUS), unpriced: 0 })
   expect(paneSpend(spent)).toMatchObject({ calls: 3, input: 306000, output: 1500, unpriced: 1 })
 })
@@ -38,7 +44,7 @@ test('the MODEL frame splits the session from the panel', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
   on('command.list', () => ({ value: [] }) as never)
   on('config.list', () => ({ value: [] }) as never)
-  on('session.cwd', () => ({ value: '/' }) as never)
+  on('session.root', () => ({ value: '/' }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   on('session.model', () => ({ value: OPUS }) as never)
   on('session.usage', () => ({ value: { startedAt: 5, context: { window: 1000000 }, rateLimits: [], cost: { usd: 1 } } }) as never)
@@ -76,7 +82,7 @@ test('a /clear starts the spend over', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
   on('command.list', () => ({ value: [] }) as never)
   on('config.list', () => ({ value: [] }) as never)
-  on('session.cwd', () => ({ value: '/' }) as never)
+  on('session.root', () => ({ value: '/' }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   on('session.model', () => ({ value: OPUS }) as never)
   on('session.usage', () => ({ value: { startedAt, context: { window: 1000000 }, rateLimits: [], cost: { usd: 0.5 } } }) as never)
@@ -96,5 +102,41 @@ test('a /clear starts the spend over', async ($, on) => {
   await clock.advance(2000)
   expect(await ui.find({ type: 'Text', text: /i\/o 102k/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'session $0.50    i/o 0/0' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a /clear while another tab shows counts only the requests after it', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { HOME: '/home' })
+  let startedAt = 5
+  on('command.register', () => ({ value: undefined }) as never)
+  on('tool.register', () => ({ value: undefined }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('command.list', () => ({ value: [] }) as never)
+  on('config.list', () => ({ value: [] }) as never)
+  on('session.root', () => ({ value: '/' }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+  on('session.model', () => ({ value: OPUS }) as never)
+  on('session.usage', () => ({ value: { startedAt, context: { window: 1000000 }, rateLimits: [], cost: { usd: 0.5 } } }) as never)
+  on('ui.panes', () => ({ value: [{ id: 'session-panel', title: 'Session', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], usage: { ...USAGE, model: OPUS } } as never
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as never).catch(() => undefined)
+  const ui = await $.ui.mount(PANE)
+  const step: Parameters<TestBody>[0]['turn']['step'] = input => $.turn.step(input)
+
+  for await (const chunk of step({ turnId: 'turn-1', index: 0, model: OPUS, messageCount: 1 } as never)) void chunk
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: /i\/o 102k/ })).toBeDefined()
+
+  // Explain on show: the timer reads no usage, so only the request itself sees the /clear.
+  await ui.press({ key: 'tab-explain' })
+  startedAt = 9
+  for await (const chunk of step({ turnId: 'turn-2', index: 0, model: OPUS, messageCount: 1 } as never)) void chunk
+  await clock.advance(2000)
+  await ui.press({ key: 'tab-overview' })
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: 'session $0.50    i/o 102k/500' })).toBeDefined()
   await ui.unmount()
 })

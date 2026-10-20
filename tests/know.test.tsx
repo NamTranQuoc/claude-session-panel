@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { checkOutcome, isCheckStep, knowPrompt, noteDraft, parseNote, skipsAfter } from '../hooks/know-prompt'
+import { checkOutcome, cleanExplanation, isCheckStep, knowPrompt, noteDraft, parseNote, skipsAfter } from '../hooks/know-prompt'
 
 const PANE = {
   plugin: 'session-panel',
@@ -22,13 +22,14 @@ const REPLY = [
 ].join('\n')
 const USAGE = { input_tokens: 3000, cache_read_input_tokens: 120000, cache_creation_input_tokens: 0, output_tokens: 400 }
 
-// The engine beneath the plugin: a placed pane, a fork that answers `reply` (and `explained` to an
-// explanation request), turns that start and step.
+// The engine beneath the plugin: a placed pane, a session's start the spend counts from, a fork that
+// answers `reply` (and `explained` to an explanation request), turns that start and step.
 const world = (on: On, { reply = REPLY, explained = '**Plainer**\nIn short.', store = {} } = {}) => {
   const clock = mock.clock(on)
   mock.store(on, store)
   const forks: string[] = []
   on('ui.panes', () => ({ value: [{ id: 'session-panel', title: 'Session', isShown: true, isFocused: false, isPlaced: true }] }))
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
   on('model.fork', ($, e) => {
     forks.push(e.prompt)
     const text = e.prompt.includes('The person opened this note') ? explained : reply
@@ -68,13 +69,23 @@ test('a reply parses to none, a note, or neither', () => {
     tag: 'Heads up',
     explanation: '',
   })
-  expect(parseNote('- **learn:** Reads pay extra CPU now.\n**tag:** You should know').kind).toBe('note')
+  // Bold labels, the colon inside the stars or after them; text that opens bold after a plain label keeps its stars.
+  expect(parseNote('- **learn:** Reads pay extra CPU now.\n**tag:** You should know')).toMatchObject({ line: 'Reads pay extra CPU now.', tag: 'You should know' })
+  expect(parseNote('**learn**: x')).toMatchObject({ line: 'x.' })
+  expect(parseNote('learn: **Bold** x')).toMatchObject({ line: '**Bold** x.' })
+  expect(parseNote('learn: Reads cost CPU.\n**explain:**\n**Reads cost CPU**\nBody.')).toMatchObject({ explanation: '**Reads cost CPU**\nBody.' })
   // A line that opens with the word "None" is a note; a `tag:` inside the explanation is its text.
   expect(parseNote('learn: None of the retries are logged, so failures vanish.').kind).toBe('note')
   expect(parseNote('learn: Retries are silent.\nexplain:\n**T**\ntag: Heads up is a label here')).toMatchObject({ tag: 'You should know' })
   // Escape sequences go, CSI and OSC alike; a long explanation is cut.
   expect(parseNote('learn: Look \u001b[31mhere\u001b]8;;http://x\u0007 now.')).toMatchObject({ line: 'Look here now.' })
   expect((parseNote(`learn: Long.\nexplain:\n${'y'.repeat(5000)}`) as { explanation: string }).explanation).toHaveLength(4000)
+})
+
+test('a rewritten explanation is cleaned and cut like a check reply', () => {
+  const text = cleanExplanation(`  \u001b[1m**Plainer**\u001b[0m\n${'z'.repeat(5000)}`)
+  expect(text.startsWith('**Plainer**\nz')).toBe(true)
+  expect(text).toHaveLength(4000)
 })
 
 test('a check outcome names why a note is not shown', () => {
@@ -176,6 +187,7 @@ test('no check while the pane is not placed, or at three open notes', async ($, 
   let forks = 0
   let isPlaced = false
   on('ui.panes', () => ({ value: [{ id: 'session-panel', title: 'Session', isShown: true, isFocused: false, isPlaced }] }))
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
   on('model.fork', () => {
     forks += 1
 
@@ -349,7 +361,7 @@ test('the on/off pick of the last session comes back', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
   on('command.list', () => ({ value: [] }) as never)
   on('config.list', () => ({ value: [] }) as never)
-  on('session.cwd', () => ({ value: '/' }) as never)
+  on('session.root', () => ({ value: '/' }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as never).catch(() => undefined)
   const ui = await $.ui.mount(PANE)

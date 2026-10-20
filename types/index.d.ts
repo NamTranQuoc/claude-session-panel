@@ -30,6 +30,9 @@ export type SessionPanelChat = {
   notice?: string
   // The cold-cache warning was shown; the next ask goes through.
   isColdWarned?: boolean
+  // Times the plugin put a question back into `draft`: part of the Input's key, so each one draws a fresh
+  // field that shows it (the host empties a field after Enter).
+  saves?: number
 }
 
 export type SessionPanelDecision = {
@@ -59,7 +62,7 @@ export type SessionPanelNote = {
   isSeen: boolean
   // Prompts submitted since it was seen.
   promptsPast: number
-  // The user's reply, saved from the Input; Submit puts it in the prompt box under the note.
+  // The user's reply, saved from the Input; Submit sends it to the main agent under the quoted note.
   draft: string
   // Times the reply was saved: part of the reply Input's key, as a decision's `saves`.
   saves?: number
@@ -83,6 +86,8 @@ declare module 'claude-code' {
       nextNoteId: number
       isKnowOn: boolean
       spend: SessionPanelSpending
+      // The prompt-cache TTL the engine last reported at a model switch; '' until one does (read as 1 hour).
+      cacheTtl: '5m' | '1h' | ''
     }
   }
 }

@@ -8,6 +8,7 @@ import { knowLive, registerKnow } from './know'
 import { checkOutcome, IGNORED_AFTER_PROMPTS, isCheckStep, KEPT_LINES, knowPrompt, MAX_OPEN_NOTES, skipsAfter } from './know-prompt'
 import { registerOverview } from './overview'
 import { count, live, NO_SPENDING, PANE, strings, withSpend } from './shared'
+import type { CacheTtl } from './shared'
 import { effortOf, endSubagent, registerSubagents } from './subagents'
 import { RULES, SECTION_ID, takesRules } from './system'
 
@@ -18,6 +19,7 @@ const notes = atom({ plugin: 'session-panel', key: 'notes' } as const, [] as Ses
 const nextNoteId = atom({ plugin: 'session-panel', key: 'nextNoteId' } as const, 1)
 const isKnowOn = atom({ plugin: 'session-panel', key: 'isKnowOn' } as const, false)
 const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
+const cacheTtl = atom({ plugin: 'session-panel', key: 'cacheTtl' } as const, '' as CacheTtl | '')
 
 const PANE_OPEN = { id: PANE, title: 'Session', columns: 56 }
 
@@ -68,16 +70,18 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Closes the pane while it is drawn, on show or behind another pane's tab (an open would only retitle
+  // it). One not open, or waiting undrawn, is opened, which places it at any width (the person asked).
   on('command.run', { command: 'panel' }, async $ => {
     const panes = await $.ui.panes()
-    if (panes.some(p => p.id === PANE)) {
+    if (panes.some(p => p.id === PANE && p.isPlaced)) {
       await $.ui.close({ id: PANE })
 
       return { text: 'Session panel closed.' }
     }
-    await $.ui.open(PANE_OPEN)
+    const opened = await $.ui.open(PANE_OPEN)
 
-    return { text: 'Session panel opened.' }
+    return { text: opened.isPlaced ? 'Session panel opened.' : `Session panel is open but waits undrawn: ${opened.reason}` }
   })
 
   // The panel's rules ride the system prompt from the first request on.
@@ -121,14 +125,18 @@ export const register: Register = on => {
   })
 
   // Every model request: its usage counts toward the session's spend; a subagent's runs at its recorded
-  // effort; the main loop's records its model and effort, and on its 6th, 12th, … step of a turn starts a
-  // Know check beside the request.
+  // effort; the main loop's records its model and effort, and on step index 6, 12, … of a turn (the 7th,
+  // 13th, … request) starts a Know check beside the request.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
       const level = effortOf(e.agentId)
       const done = yield* next(level ? { ...e, effort: level } : e)
       const used = done.usage
-      if (used) await update($, spend, s => withSpend(s, 'session', used, used.model))
+      if (used) {
+        const { startedAt } = await $.session.usage()
+        const ttl = await read($, cacheTtl)
+        await update($, spend, s => withSpend(s, 'session', used, used.model, startedAt, ttl))
+      }
 
       return done
     }
@@ -151,10 +159,14 @@ export const register: Register = on => {
       knowLive.last = { outcome: 'checking…' }
       $.ui.invalidate('ui.render')
       const reply = await $.model.fork({ prompt: knowPrompt(seen, known, open) }).catch(() => undefined)
+      // The fork read the main prefix, which renews its cache entry.
+      if (reply?.isAnswered) live.mainAt = await $.clock.now()
       // A fork runs on the main session's model.
       if (reply && 'usage' in reply && reply.usage) {
         const used = reply.usage
-        await update($, spend, s => withSpend(s, 'knowCheck', used, live.model))
+        const { startedAt } = await $.session.usage()
+        const ttl = await read($, cacheTtl)
+        await update($, spend, s => withSpend(s, 'knowCheck', used, live.model, startedAt, ttl))
       }
       const usage =
         reply && 'usage' in reply && reply.usage
@@ -193,7 +205,11 @@ export const register: Register = on => {
     const done = yield* next(e)
     live.mainAt = await $.clock.now()
     const used = done.usage
-    if (used) await update($, spend, s => withSpend(s, 'session', used, used.model))
+    if (used) {
+      const { startedAt } = await $.session.usage()
+      const ttl = await read($, cacheTtl)
+      await update($, spend, s => withSpend(s, 'session', used, used.model, startedAt, ttl))
+    }
 
     return done
   })

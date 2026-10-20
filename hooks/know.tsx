@@ -2,14 +2,16 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { SessionPanelNote, SessionPanelSpending, SessionPanelTab, SessionPanelUsage } from '../types'
-import { explainNotePrompt, KEPT_LINES, noteDraft, noteKey } from './know-prompt'
+import { cleanExplanation, explainNotePrompt, KEPT_LINES, noteDraft, noteKey } from './know-prompt'
 import { fit, live, NO_SPENDING, PANE, strings, tokens, withSpend } from './shared'
+import type { CacheTtl } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const notes = atom({ plugin: 'session-panel', key: 'notes' } as const, [] as SessionPanelNote[])
 const noteId = atom({ plugin: 'session-panel', key: 'noteId' } as const, 0)
 const isKnowOn = atom({ plugin: 'session-panel', key: 'isKnowOn' } as const, false)
 const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
+const cacheTtl = atom({ plugin: 'session-panel', key: 'cacheTtl' } as const, '' as CacheTtl | '')
 
 // What the checks are doing, for the hook that runs them (`turn.step`) and the tab that shows the last one.
 export const knowLive = {
@@ -69,11 +71,15 @@ export const registerKnow = (on: On) => {
       if (note.isExplaining) return
       await patch(note.id, { isExplaining: true })
       const reply = await $.model.fork({ prompt: explainNotePrompt(note.line, note.explanation) }).catch(() => undefined)
+      // The fork read the main prefix, which renews its cache entry.
+      if (reply?.isAnswered) live.mainAt = await $.clock.now()
       if (reply && 'usage' in reply && reply.usage) {
         const used = reply.usage
-        await update($, spend, s => withSpend(s, 'knowExplain', used, live.model))
+        const { startedAt } = await $.session.usage()
+        const ttl = await read($, cacheTtl)
+        await update($, spend, s => withSpend(s, 'knowExplain', used, live.model, startedAt, ttl))
       }
-      const text = reply?.isAnswered ? reply.text.trim() : ''
+      const text = reply?.isAnswered ? cleanExplanation(reply.text) : ''
       if (!text) $.ui.toast("Couldn't write that explanation.")
       await patch(note.id, { isExplaining: false, ...(text ? { explanation: text } : {}) })
     }
@@ -118,7 +124,7 @@ export const registerKnow = (on: On) => {
         <Box flexDirection="column">
           {header}
           {isOn ? (
-            <Text dimColor>Nothing to know yet. While this pane is open, a side check runs on every 6th step of a long turn.</Text>
+            <Text dimColor>Nothing to know yet. While this pane is on show, a side check runs every 6 steps of a long turn, from the 7th.</Text>
           ) : (
             <Text dimColor>Checks are off. Turned on, each check is one fork of the main session (its cached context plus the check's rules).</Text>
           )}

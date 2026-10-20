@@ -11,8 +11,8 @@ const nextDecisionId = atom({ plugin: 'session-panel', key: 'nextDecisionId' } a
 
 export const TOOL = 'decisions'
 export const TOOL_NAME = `mcp__${PLUGIN}__${TOOL}`
-// D<n> as a word: not part of a longer name (`D3.js`, `AD3`, `D3_x`).
-const MENTION = /(?<![\w.])D(\d+)(?![\w.])/g
+// D<n> as a word: not part of a longer name (`D3.js`, `AD3`, `D3_x`); a sentence may end on it.
+const MENTION = /(?<![\w.])D(\d+)(?!\w|\.\w)/g
 
 // Text typed into an item's field and not saved with Enter, by id, so Submit sends it too. Not in the
 // atom: a change of the drawn `value` resets the field the person is typing in.
@@ -70,11 +70,30 @@ export const applyDecisions = (list: readonly SessionPanelDecision[], nextId: nu
   return { list: result, nextId: id }
 }
 
+// What is wrong with a `decisions` call's input, naming the field, or undefined when it has the schema's shape.
+export const decisionsInputError = (input: Record<string, unknown>) => {
+  const { upsert, remove } = input
+  if (upsert !== undefined) {
+    if (!Array.isArray(upsert)) return '`upsert` must be an array of items.'
+    for (const [i, item] of upsert.entries()) {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) return `\`upsert[${i}]\` must be an object.`
+      const { id, title, detail, options } = item as Record<string, unknown>
+      if (typeof title !== 'string') return `\`upsert[${i}].title\` must be a string.`
+      if (typeof detail !== 'string') return `\`upsert[${i}].detail\` must be a string.`
+      if (id !== undefined && typeof id !== 'number') return `\`upsert[${i}].id\` must be a number.`
+      if (options !== undefined && !(Array.isArray(options) && options.every(o => typeof o === 'string'))) return `\`upsert[${i}].options\` must be an array of strings.`
+    }
+  }
+  if (remove !== undefined && !(Array.isArray(remove) && remove.every(n => typeof n === 'number'))) return '`remove` must be an array of numbers.'
+
+  return undefined
+}
+
 // An answer as the main agent gets it: a leading option number names the option by number only, so
 // text the agent wrote never comes back as the user's words; the rest is what the user typed.
 export const formatAnswer = (d: SessionPanelDecision) => {
   const answer = (d.answer ?? '').trim()
-  const n = /^(\d+)\b[.):]?\s*/.exec(answer)
+  const n = /^(\d+)(?:[.):])?(?=\s|$)\s*/.exec(answer)
   if (!n || d.options?.[Number(n[1]) - 1] === undefined) return answer
   const rest = answer.slice(n[0].length).trim()
 
@@ -100,19 +119,30 @@ export const registerDecisions = (on: On) => {
     // The list is the user's conversation with the main agent; a subagent's text would reach the
     // main agent's user turns through D<n> mentions without the main agent having written it.
     if (e.agentId !== undefined) return { deny: 'Only the main conversation keeps the decisions list.' }
+    // A malformed call (a field sent as a string, say) changes nothing.
+    const wrong = decisionsInputError(e as unknown as Record<string, unknown>)
+    if (wrong) return { deny: wrong }
     const input = e as unknown as DecisionsInput
-    const before = await read($, decisions)
-    const applied = applyDecisions(before, await read($, nextDecisionId), input)
+    // Applied inside `update`, so a concurrent call's items are kept on a retry; new numbers start past
+    // both the counter and the newest list, so two calls never hand out the same one.
+    const floor = await read($, nextDecisionId)
+    let before: readonly SessionPanelDecision[] = []
+    let applied = { list: [] as SessionPanelDecision[], nextId: floor }
+    const list = await update($, decisions, all => {
+      before = all
+      applied = applyDecisions(all, Math.max(floor, ...all.map(d => d.id + 1)), input)
+
+      return applied.list
+    })
+    await update($, nextDecisionId, n => Math.max(n, applied.nextId))
     // Typed text goes with the item it was typed for: a removed or replaced item drops it.
     for (const id of [...typed.keys()]) {
-      if (applied.list.find(d => d.id === id) !== before.find(d => d.id === id)) typed.delete(id)
+      if (list.find(d => d.id === id) !== before.find(d => d.id === id)) typed.delete(id)
     }
-    await update($, nextDecisionId, () => applied.nextId)
-    await update($, decisions, () => applied.list)
     // A selected item the agent removed is deselected; its draft went with it.
-    await update($, decisionId, id => (applied.list.some(d => d.id === id) ? id : 0))
+    await update($, decisionId, id => (list.some(d => d.id === id) ? id : 0))
 
-    return { result: listDecisions(applied.list) }
+    return { result: listDecisions(list) }
   })
 
   // A prompt naming D<n> carries those items, so the main agent reads what the user points at. The

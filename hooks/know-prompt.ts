@@ -3,7 +3,8 @@ import type { ModelForkResult } from 'claude-code'
 import type { SessionPanelNoteTag } from '../types'
 import { inert, quote } from './shared'
 
-// A check runs on the main loop's step 6, 12, 18, … of a turn: short turns are never checked.
+// A check runs on the main loop's step index 6, 12, 18, … of a turn (its 7th, 13th, 19th … request): short
+// turns are never checked.
 export const CHECK_EVERY = 6
 // Unanswered notes the Know tab holds at most; at this many, checks stop.
 export const MAX_OPEN_NOTES = 3
@@ -115,13 +116,18 @@ export type ParsedNote =
   | { kind: 'note'; line: string; tag: SessionPanelNoteTag; explanation: string }
 
 // Control characters and escape sequences (CSI and OSC) out; line breaks and tabs stay.
-const clean = (text: string) =>
+export const clean = (text: string) =>
   text
     .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '')
 
-const LABEL = (name: string) => new RegExp(`^\\s*(?:[-*\\u2022]\\s+)?\\**${name}\\**\\s*:\\s*`, 'i')
+// An explanation as the tab keeps it, from a check or a rewrite: cleaned, trimmed and cut.
+export const cleanExplanation = (text: string) => clean(text).trim().slice(0, MAX_EXPLANATION_LENGTH)
+
+// A label, bold or not: `**learn**:` or `**learn:**`. Stars after the colon close a bold label only, so
+// text that itself opens bold after a plain `learn: ` keeps its stars.
+const LABEL = (name: string) => new RegExp(`^\\s*(?:[-*\\u2022]\\s+)?(?:\\*+${name}\\s*:\\s*\\**|\\**${name}\\**\\s*:)\\s*`, 'i')
 const LEARN = LABEL('learn')
 const TAG = LABEL('tag')
 const EXPLAIN = LABEL('explain')
@@ -164,7 +170,7 @@ export const parseNote = (reply: string): ParsedNote => {
 
   const explanation = explainAt === -1 ? '' : [(lines[explainAt] ?? '').replace(EXPLAIN, ''), ...lines.slice(explainAt + 1)].join('\n').trim()
 
-  return { kind: 'note', line, tag: tagOf(tagLine?.replace(TAG, '') ?? inline?.[1] ?? ''), explanation: explanation.slice(0, MAX_EXPLANATION_LENGTH) }
+  return { kind: 'note', line, tag: tagOf(tagLine?.replace(TAG, '') ?? inline?.[1] ?? ''), explanation: cleanExplanation(explanation) }
 }
 
 // Two lines are the same note when they differ only in case or a trailing period.

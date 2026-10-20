@@ -2,7 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
 import type { SessionPanelChat, SessionPanelDecision, SessionPanelSpending, SessionPanelTab } from '../types'
-import { fit, listDecisions, live, NO_SPENDING, PANE, tokens, withSpend } from './shared'
+import { clean } from './know-prompt'
+import { cacheTtlMs, fit, listDecisions, live, NO_SPENDING, PANE, tokens, withSpend } from './shared'
+import type { CacheTtl } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const chats = atom({ plugin: 'session-panel', key: 'chats' } as const, [] as SessionPanelChat[])
@@ -10,14 +12,13 @@ const chatId = atom({ plugin: 'session-panel', key: 'chatId' } as const, 0)
 const nextChatId = atom({ plugin: 'session-panel', key: 'nextChatId' } as const, 1)
 const decisions = atom({ plugin: 'session-panel', key: 'decisions' } as const, [] as SessionPanelDecision[])
 const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
+const cacheTtl = atom({ plugin: 'session-panel', key: 'cacheTtl' } as const, '' as CacheTtl | '')
 
 const MAX_TURNS = 20
 // History sent with a question, newest first, up to this many characters.
 const MAX_HISTORY_CHARS = 6000
 // A reply that wrote this many prompt tokens to the cache re-sent the main context at full price.
 const COLD_CACHE_TOKENS = 20000
-// The API's default prompt-cache lifetime; idle longer, the main context is likely billed afresh.
-const CACHE_TTL_MS = 5 * 60 * 1000
 
 // The /brief rules that shape an answer, condensed.
 const BRIEF = `- Same language as the question; technical terms and names stay in English.
@@ -72,14 +73,16 @@ export const registerExplain = (on: On) => {
     const ask = async (id: number, question: string) => {
       const current = (await read($, chats)).find(one => one.id === id)
       if (!current || current.isAsking || !question.trim()) return
-      // Warn before a fork the cold cache would bill at full price; asking again sends it.
+      // Idle past the session's cache TTL, the main context is likely billed afresh: warn before a fork the
+      // cold cache would bill at full price; asking again sends it.
       const now = await $.clock.now()
       const idle = now - live.mainAt
-      if (live.mainAt > 0 && !live.isMainRunning && idle >= CACHE_TTL_MS && !current.isColdWarned) {
+      if (live.mainAt > 0 && !live.isMainRunning && idle >= cacheTtlMs(await read($, cacheTtl)) && !current.isColdWarned) {
         const { context } = await $.session.usage()
         await patch(id, one => ({
           ...one,
           draft: question,
+          saves: (one.saves ?? 0) + 1,
           isColdWarned: true,
           notice: `Main session idle ${Math.round(idle / 60000)}m: its prompt cache has likely expired, so this question re-sends about ${tokens(context.tokens ?? 0)} tokens of context at full price. Ask again to send it.`,
         }))
@@ -94,7 +97,9 @@ export const registerExplain = (on: On) => {
       // A fork runs on the main session's model.
       if ('usage' in reply && reply.usage) {
         const used = reply.usage
-        await update($, spend, s => withSpend(s, 'explain', used, live.model))
+        const { startedAt } = await $.session.usage()
+        const ttl = await read($, cacheTtl)
+        await update($, spend, s => withSpend(s, 'explain', used, live.model, startedAt, ttl))
       }
       const notice = reply.isAnswered
         ? undefined
@@ -111,12 +116,13 @@ export const registerExplain = (on: On) => {
         isAsking: false,
         notice,
         draft: reply.isAnswered ? '' : question,
+        saves: reply.isAnswered ? one.saves : (one.saves ?? 0) + 1,
         history: reply.isAnswered
           ? [
               ...one.history,
               {
                 question,
-                answer: reply.text,
+                answer: clean(reply.text),
                 usage: {
                   input: reply.usage.input_tokens,
                   cacheRead: reply.usage.cache_read_input_tokens,
@@ -130,8 +136,8 @@ export const registerExplain = (on: On) => {
     }
 
     const add = async () => {
-      const id = await read($, nextChatId)
-      await update($, nextChatId, n => n + 1)
+      // The id comes from the write itself: two presses before a redraw get two ids.
+      const id = (await update($, nextChatId, n => n + 1)) - 1
       await update($, chats, all => [...all, { id, history: [], draft: '', isAsking: false }])
       await update($, chatId, () => id)
     }
@@ -193,8 +199,10 @@ export const registerExplain = (on: On) => {
           {chat.isAsking || !Input ? (
             <Text dimColor>{chat.isAsking ? 'asking…' : 'this surface has no text input'}</Text>
           ) : (
+            // The host empties a field once Enter is handled, before or after the redraw that brings a
+            // question put back; a new key per put-back draws a fresh field that keeps it.
             <Input
-              key={`chat-input-${chat.id}`}
+              key={`chat-input-${chat.id}-${chat.saves ?? 0}`}
               placeholder="Ask about this session (D<n> names a decision)"
               value={chat.draft}
               rows={3}

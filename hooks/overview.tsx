@@ -4,12 +4,14 @@ import type { ConfigRow, On, RenderChildren, SessionUsage } from 'claude-code'
 import type { SessionPanelSpending, SessionPanelTab } from '../types'
 import { ago, bar, clock, commandDir, level, parseCi, repoOf, TERMINAL, toolSummary, until } from './overview-data'
 import type { AgentView, Picker, Repo, Todo } from './overview-data'
-import { EFFORTS, fit, INHERIT, live, MODELS, NO_SPENDING, PANE, paneSpend, tokens } from './shared'
+import { EFFORTS, fit, INHERIT, live, MODELS, NO_SPENDING, PANE, paneSpend, spendingSince, tokens } from './shared'
+import type { CacheTtl } from './shared'
 
 const tab = atom({ plugin: 'session-panel', key: 'tab' } as const, 'overview' as SessionPanelTab)
 const agentModel = atom({ plugin: 'session-panel', key: 'agentModel' } as const, 'inherit')
 const agentEffort = atom({ plugin: 'session-panel', key: 'agentEffort' } as const, 'inherit')
 const spend = atom({ plugin: 'session-panel', key: 'spend' } as const, NO_SPENDING as SessionPanelSpending)
+const cacheTtl = atom({ plugin: 'session-panel', key: 'cacheTtl' } as const, '' as CacheTtl | '')
 
 const FAST_MS = 2000
 const GIT_CMD = /(^|[\s;&|(])(git|gh)\s/
@@ -61,8 +63,8 @@ export const registerOverview = (on: On) => {
       else if (/effort/i.test(row.key) || /effort/i.test(row.label)) settings.set('effort', row)
     }
 
-    // Pinned at start: the session's directory follows every `cd` the Bash tool runs.
-    const root = await $.session.cwd()
+    // The project root: unlike the session's directory, it does not follow the Bash tool's `cd`.
+    const root = await $.session.root()
     const home = await $.env.get('HOME')
     isScanSkipped = root === '/' || root === home
 
@@ -166,7 +168,7 @@ export const registerOverview = (on: On) => {
     let tick = 0
     const fast = async () => {
       try {
-        const isShown = (await read($, tab)) === 'overview' && (await $.ui.panes()).some(p => p.id === PANE)
+        const isShown = (await read($, tab)) === 'overview' && (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced && p.isShown)
         const isRunning = [...agents.values()].some(a => a.endedAt === undefined)
         if (!isShown && !isRunning) return
         await refreshAgents()
@@ -175,7 +177,7 @@ export const registerOverview = (on: On) => {
         usage = await $.session.usage()
         // The spend counts from the session's start; a /clear moves it, and the sums start over with it.
         const startedAt = usage.startedAt
-        await update($, spend, s => (s.since === startedAt ? s : s.since === 0 ? { ...s, since: startedAt } : { ...NO_SPENDING, since: startedAt }))
+        await update($, spend, s => spendingSince(s, startedAt))
         const seen = JSON.stringify([live.model, usage, [...agents.values()]])
         const isTicking = [...agents.values()].some(a => a.endedAt === undefined)
         tick += 1
@@ -254,15 +256,26 @@ export const registerOverview = (on: On) => {
     return ran
   })
 
-  // A model switch started from the pane is the person's own pick: it skips the cache-loss prompt,
-  // once, and only for the model picked there.
+  // The engine reports the session's prompt-cache TTL only with a model switch: each switch records it
+  // first, whatever it decides. A model switch started from the pane is the person's own pick: it skips
+  // the cache-loss prompt, once, and only for the model picked there.
   on('classic.PreModelSwitch', async ($, e, next) => {
+    const ttl = e.cache_ttl
+    if (ttl === '5m' || ttl === '1h') await update($, cacheTtl, () => ttl)
     const result = await next(e)
     const to = live.switchTo
     if (!to || ![e.requested_model, e.to_model].some(m => m?.toLowerCase().includes(to))) return result
     live.switchTo = ''
 
     return { ...result, permissionDecision: 'allow' as const }
+  })
+
+  // After a switch, a fallback or a resume included.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    const ttl = e.cache_ttl
+    if (ttl === '5m' || ttl === '1h') await update($, cacheTtl, () => ttl)
+
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
