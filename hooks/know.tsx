@@ -56,16 +56,16 @@ export const registerKnow = (on: On) => {
       await update($, isKnowOn, () => value)
       await $.store.set('knowOn', value)
     }
-    // An answered note leaves the list; any answer ends a run of ignored notes and its skipped checks.
-    const close = async (note: SessionPanelNote, isKnown: boolean) => {
-      typed.delete(note.id)
-      await update($, notes, all => all.filter(n => n.id !== note.id))
+    // Answered notes leave the list.
+    const close = async (answered: readonly SessionPanelNote[], isKnown: boolean) => {
+      const ids = new Set(answered.map(n => n.id))
+      for (const id of ids) typed.delete(id)
+      await update($, notes, all => all.filter(n => !ids.has(n.id)))
       if (isKnown) {
         const known = strings(await $.store.get('knowKnown'))
-        if (!known.some(line => noteKey(line) === noteKey(note.line))) await $.store.set('knowKnown', [...known, note.line].slice(-KEPT_LINES))
+        const added = answered.map(n => n.line).filter(line => !known.some(k => noteKey(k) === noteKey(line)))
+        if (added.length) await $.store.set('knowKnown', [...known, ...added].slice(-KEPT_LINES))
       }
-      await $.store.set('knowIgnored', 0)
-      await $.store.set('knowSkips', 0)
     }
     const explain = async (note: SessionPanelNote) => {
       if (note.isExplaining) return
@@ -87,21 +87,33 @@ export const registerKnow = (on: On) => {
       typed.delete(id)
       await update($, notes, all => all.map(n => (n.id === id ? { ...n, draft: value, saves: (n.saves ?? 0) + 1 } : n)))
     }
-    // Redrawn only when the note turns replied or not, for its mark.
+    // Redrawn only when the note turns replied or not, for its mark and the count.
     const edit = (note: SessionPanelNote, value: string) => {
       const wasReplied = Boolean(replyOf(note).trim())
       typed.set(note.id, value)
       if (wasReplied !== Boolean(value.trim())) $.ui.invalidate('ui.render')
     }
-    // Submit sends the note and the reply to the main agent, as Decisions sends its answers; a reply not
-    // saved with Enter is saved first. A dropped prompt keeps the note: the host shows the drop's reason.
-    const submit = async (note: SessionPanelNote) => {
+    // As Decisions' Submit: typed replies that were not saved are saved first; Submit never needs an
+    // Enter. Sent, the replied notes leave the list as known: the prompt quotes them. A dropped prompt
+    // keeps them (the host shows why).
+    const submit = async () => {
       if (live.isMainRunning) return
-      const reply = replyOf(note)
-      if (typed.has(note.id)) await save(note.id, reply)
-      const sent = await $.prompt.submit({ text: noteDraft(note, reply) }).catch(() => undefined)
-      if (!sent) return $.ui.toast("Couldn't send the note. Press Submit to try again.")
-      if (!sent.drop) await close(note, true)
+      const pending = new Map(typed)
+      typed.clear()
+      let saved: SessionPanelNote[] = []
+      await update($, notes, all => {
+        saved = all.map(n => (pending.has(n.id) ? { ...n, draft: pending.get(n.id) ?? '', saves: (n.saves ?? 0) + 1 } : n))
+
+        return saved
+      })
+      const replied = saved.filter(n => n.draft.trim())
+      if (replied.length === 0) return $.ui.toast("No replies to send: type one in a note's field.")
+      const sent = await $.prompt.submit({ text: noteDraft(replied) }).catch(() => undefined)
+      if (!sent) return $.ui.toast("Couldn't send the replies. Press Submit to try again.")
+      if (sent.drop) return
+      await close(replied, true)
+      const ids = new Set(replied.map(n => n.id))
+      await update($, noteId, id => (ids.has(id) ? 0 : id))
     }
 
     const last = knowLive.last
@@ -118,6 +130,9 @@ export const registerKnow = (on: On) => {
         ) : null}
       </Box>
     )
+
+    const readyCount = list.filter(n => replyOf(n).trim()).length
+    const isLocked = live.isMainRunning
 
     if (list.length === 0) {
       return (
@@ -159,17 +174,22 @@ export const registerKnow = (on: On) => {
                 <Button key={`note-explain-${selected.id}`} label="Explain" onPress={() => void explain(selected)} />
               )}
               <Box flexWrap="wrap" marginTop={1}>
-                <Button key={`note-understood-${selected.id}`} label="Understood" onPress={() => void close(selected, true)} />
-                <Button key={`note-knew-${selected.id}`} label="Knew this already" onPress={() => void close(selected, true)} />
-                <Button key={`note-irrelevant-${selected.id}`} label="Not relevant" onPress={() => void close(selected, false)} />
+                <Button key={`note-understood-${selected.id}`} label="Understood" onPress={() => void close([selected], true)} />
+                <Button key={`note-knew-${selected.id}`} label="Knew this already" onPress={() => void close([selected], true)} />
+                <Button key={`note-irrelevant-${selected.id}`} label="Not relevant" onPress={() => void close([selected], false)} />
                 {selected.explanation && !selected.isExplaining ? (
                   <Button key={`note-simpler-${selected.id}`} label="Couldn't understand" onPress={() => void explain(selected)} />
                 ) : null}
-                <Button key={`note-dismiss-${selected.id}`} label="Dismiss" onPress={() => void close(selected, false)} />
+                <Button key={`note-dismiss-${selected.id}`} label="Dismiss" onPress={() => void close([selected], false)} />
               </Box>
             </Box>
             {/* Outside the bordered box: the host sizes an Input to the pane's full width. */}
-            {Input ? (
+            {isLocked || !Input ? (
+              <Text dimColor>
+                {replyOf(selected) ? `reply: ${replyOf(selected)} · ` : ''}
+                {isLocked ? 'main agent is running' : 'this surface has no text input'}
+              </Text>
+            ) : (
               // A new key per save, as in Decisions: the host empties a field once Enter is handled.
               <Input
                 key={`note-input-${selected.id}-${selected.saves ?? 0}`}
@@ -180,18 +200,17 @@ export const registerKnow = (on: On) => {
                 onInput={(value: string) => edit(selected, value)}
                 onSubmit={(value: string) => void save(selected.id, value)}
               />
-            ) : (
-              <Text dimColor>this surface has no text input</Text>
-            )}
-            {live.isMainRunning ? (
-              <Text dimColor>main agent is running</Text>
-            ) : (
-              <Box justifyContent="flex-end">
-                <Button key={`note-submit-${selected.id}`} label="Submit" variant="primary" onPress={() => void submit(selected)} />
-              </Box>
             )}
           </Box>
         ) : null}
+        <Box marginTop={1} justifyContent="space-between">
+          <Text dimColor>{`${readyCount} repl${readyCount === 1 ? 'y' : 'ies'} ready`}</Text>
+          {isLocked ? (
+            <Text dimColor>main agent is running</Text>
+          ) : (
+            <Button key="know-submit" label="Submit" variant="primary" onPress={() => void submit()} />
+          )}
+        </Box>
       </Box>
     )
   })

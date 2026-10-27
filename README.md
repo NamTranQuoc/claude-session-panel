@@ -69,14 +69,16 @@ Requirements:
 
 - **[checks off]** / **[checks on]** at the top turns the checks on or off; the choice is saved for the next sessions. Off by default.
 - While a check is on and the pane is on show (any of its tabs), a side check runs beside the 7th, 13th, 19th … model request of a turn: one `$.model.fork` over the main session, asked whether there is one thing you should know and likely missed. Most checks find nothing. Turns of 6 requests or fewer are never checked.
-- A note shows as `✦ K1  Heads up · <line>`. Press it for its explanation and these answers:
+- A note shows as `✦ K1  Heads up · <line>`. Press it for its explanation, these quick answers and a reply field:
   - **Understood** / **Knew this already**: the note leaves, and later checks skip that topic.
   - **Not relevant** / **Dismiss**: the note leaves.
   - **Couldn't understand**: the explanation is rewritten in plainer words (one more fork).
   - **Explain**: shown instead when the check wrote no explanation (one more fork).
-  - Type a reply in the field (Enter saves it; the field keeps showing it), then **Submit**: the note, quoted, and your reply go to the main agent as one prompt, as Decisions sends its answers. The note then leaves the list as known.
-- At most 3 unanswered notes; at 3, checks stop. One note per turn; a line already offered or known is not offered again.
-- A note you have seen (the Know tab was open) and passed by with 2 prompts is dropped as ignored. Three or more ignored in a row make the next checks skip: 1, then 2, 4, 8, up to 16. Any answer resets that.
+- Replies work as Decisions' answers. The field is several lines tall; `●` marks a note with a reply. Enter saves the reply, and the field keeps showing it.
+- **Submit**, below the list beside `2 replies ready`, sends every reply, typed or saved, to the main agent as one prompt: each note quoted as the check wrote it (`K1 · Heads up · <line>` and its explanation), then `Reply to K1: your text`. Sent notes leave the list, and later checks skip their topics; notes without a reply stay. If the prompt is refused, the notes stay with their replies.
+- While the main agent is working, the reply field and Submit are locked; the list, the details and the quick answers stay usable.
+- A note stays until you answer it or send a reply; prompts in chat do not drop it.
+- At most 3 open notes; at 3, checks stop. One note per turn; a line already offered or known is not offered again.
 - Under the toggle: the last check's outcome and its tokens (`in`, `cached`, `written`, `out`).
 - Cost: each check reads the main session's cached context and pays the check's rules (about 1,400 tokens, plus up to 100 lines of topics to skip) and its output at full price. On Opus 5.5 that is roughly $0.04-0.07 a check at 100k tokens of context, $0.08-0.11 at 300k: about +10-25% on a long turn. On a Pro or Max plan it counts against the usage limits instead.
 - Uninstall Claude Code's built-in *You should know* plugin when using this tab: both would check the same session.

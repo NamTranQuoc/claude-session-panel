@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { checkOutcome, cleanExplanation, isCheckStep, knowPrompt, noteDraft, parseNote, skipsAfter } from '../hooks/know-prompt'
+import { checkOutcome, cleanExplanation, isCheckStep, knowPrompt, noteDraft, parseNote } from '../hooks/know-prompt'
 
 const PANE = {
   plugin: 'session-panel',
@@ -23,16 +23,18 @@ const REPLY = [
 const USAGE = { input_tokens: 3000, cache_read_input_tokens: 120000, cache_creation_input_tokens: 0, output_tokens: 400 }
 
 // The engine beneath the plugin: a placed pane, a session's start the spend counts from, a fork that
-// answers `reply` (and `explained` to an explanation request), turns that start and step.
-const world = (on: On, { reply = REPLY, explained = '**Plainer**\nIn short.', store = {} } = {}) => {
+// answers `reply` (and `explained` to an explanation request; `reply` as a function takes the count of
+// checks before), turns that start and step.
+const world = (on: On, { reply = REPLY as string | ((checks: number) => string), explained = '**Plainer**\nIn short.', store = {} } = {}) => {
   const clock = mock.clock(on)
   mock.store(on, store)
   const forks: string[] = []
   on('ui.panes', () => ({ value: [{ id: 'session-panel', title: 'Session', isShown: true, isFocused: false, isPlaced: true }] }))
   on('session.usage', () => ({ value: { startedAt: 1, context: { window: 1000000 }, rateLimits: [], cost: { usd: 0 } } }) as never)
   on('model.fork', ($, e) => {
+    const checks = forks.filter(f => !f.includes('The person opened this note')).length
     forks.push(e.prompt)
-    const text = e.prompt.includes('The person opened this note') ? explained : reply
+    const text = e.prompt.includes('The person opened this note') ? explained : typeof reply === 'function' ? reply(checks) : reply
 
     return { value: text ? { isAnswered: true, text, usage: USAGE } : { isAnswered: false, reason: 'empty-reply', usage: USAGE } } as never
   })
@@ -44,6 +46,9 @@ const world = (on: On, { reply = REPLY, explained = '**Plainer**\nIn short.', st
 
   return { clock, forks }
 }
+
+// The person's own prompt, typed at the terminal.
+const type = ($: Parameters<TestBody>[0], text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } } as never)
 
 const step = async ($: Parameters<TestBody>[0], index: number, turnId = 'turn-1') => {
   for await (const chunk of $.turn.step({ turnId, index, model: 'm', messageCount: 3 } as never)) void chunk
@@ -101,9 +106,8 @@ test('a check outcome names why a note is not shown', () => {
   expect(checkOutcome(reply, [], now)).toMatchObject({ outcome: 'shown', note: { tag: 'Heads up' } })
 })
 
-test('checks run on every 6th step and back off after ignored notes', () => {
+test('checks run on every 6th step', () => {
   expect([0, 3, 6, 7, 12].map(isCheckStep)).toEqual([false, false, true, false, true])
-  expect([1, 2, 3, 4, 5, 6, 7, 9].map(skipsAfter)).toEqual([0, 0, 1, 2, 4, 8, 16, 16])
 })
 
 test('the check prompt lists what to skip', () => {
@@ -114,9 +118,20 @@ test('the check prompt lists what to skip', () => {
   expect(knowPrompt([], [], [])).toContain('(none)')
 })
 
-test('a submitted note is quoted and keeps the composer from acting on it', () => {
-  const draft = noteDraft({ tag: 'Heads up', line: 'Ask @alice before ultrathink runs.', explanation: '**T**\nbody' }, 'why so?')
-  expect(draft).toBe('Here is a note offered by a side agent:\n\n> Heads up · Ask ＠alice before ultra-think runs.\n>\n> **T**\n> body\n\nwhy so?')
+test('submitted replies quote their notes and keep the composer from acting on them', () => {
+  const draft = noteDraft([
+    { id: 1, tag: 'Heads up', line: 'Ask @alice before ultrathink runs.', explanation: '**T**\nbody', draft: ' why so? ' },
+    { id: 2, tag: 'You should know', line: 'Retries are silent.', explanation: '', draft: 'fine' },
+  ])
+  expect(draft).toBe(
+    [
+      "Replies to notes offered by a side agent. Each note is quoted as it wrote it; the line after it is the user's reply.",
+      '> K1 · Heads up · Ask ＠alice before ultra-think runs.\n>\n> **T**\n> body',
+      'Reply to K1: why so?',
+      '> K2 · You should know · Retries are silent.',
+      'Reply to K2: fine',
+    ].join('\n\n'),
+  )
 })
 
 test('a check on the 6th step offers a note in the Know tab', async ($, on) => {
@@ -164,7 +179,93 @@ test('a check on the 6th step offers a note in the Know tab', async ($, on) => {
   await ui.unmount()
 })
 
-test('a seen note passed by two prompts is dropped as ignored', async ($, on) => {
+test('notes stay however many prompts pass them by', async ($, on) => {
+  const { clock } = world(on)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-know' })
+  await ui.press({ key: 'know-toggle' })
+  await $.turn.start({ text: 'go', turnId: 'turn-1' } as never)
+  await step($, 6)
+  await clock.settle()
+  for (const turn of [2, 3, 4]) {
+    await type($, 'next')
+    await $.turn.start({ text: 'next', turnId: `turn-${turn}` } as never)
+  }
+  expect(await ui.find({ type: 'Text', text: /✦ K1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Submit sends every note with a reply as one prompt and keeps the rest', async ($, on) => {
+  const { clock } = world(on, { reply: checks => REPLY.replace('one-off', `one-off ${checks + 1}`) })
+  const sent: string[] = []
+  // As the engine does: a plugin's prompt starts its turn before the submit resolves.
+  on('prompt.submit', async (_, e) => {
+    sent.push(e.text)
+    await $.turn.start({ text: e.text, turnId: `turn-sent-${sent.length}` } as never)
+
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-know' })
+  await ui.press({ key: 'know-toggle' })
+  for (const turn of [1, 2, 3]) {
+    await $.turn.start({ text: 'go', turnId: `turn-${turn}` } as never)
+    await step($, 6, `turn-${turn}`)
+    await clock.settle()
+    await $.turn.complete({ turnId: `turn-${turn}`, reason: 'answer', answer: '' } as never)
+  }
+  expect(await ui.find({ type: 'Text', text: 'Know 3' })).toBeDefined()
+
+  await ui.press({ key: 'note-1' })
+  await ui.input({ key: 'note-input-1-0', text: 'first reply', kind: 'change' })
+  await ui.press({ key: 'note-2' })
+  await ui.input({ key: 'note-input-2-0', text: 'second reply' })
+  expect(await ui.find({ type: 'Text', text: '2 replies ready' })).toBeDefined()
+  await ui.press({ key: 'know-submit' })
+
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toContain('> K1 · Heads up · We turned on caching for one-off 1 questions')
+  expect(sent[0]).toContain('Reply to K1: first reply')
+  expect(sent[0]).toContain('Reply to K2: second reply')
+  expect(sent[0]).not.toContain('K3')
+  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /K2/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /✦ K3/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Submit with no reply sends nothing and says so', async ($, on) => {
+  const { clock } = world(on)
+  const sent: string[] = []
+  const toasts: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
+  on('ui.toast', ($, e) => {
+    toasts.push(JSON.stringify(e))
+
+    return { value: undefined } as never
+  })
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'tab-know' })
+  await ui.press({ key: 'know-toggle' })
+  await $.turn.start({ text: 'go', turnId: 'turn-1' } as never)
+  await step($, 6)
+  await clock.settle()
+  await $.turn.complete({ turnId: 'turn-1', reason: 'answer', answer: '' } as never)
+
+  await ui.press({ key: 'note-1' })
+  await ui.press({ key: 'know-submit' })
+  expect(sent).toHaveLength(0)
+  expect(toasts.join()).toContain('No replies to send')
+  expect(await ui.find({ type: 'Text', text: /✦ K1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the reply field and Submit lock while the main agent runs', async ($, on) => {
   const { clock } = world(on)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-know' })
@@ -172,12 +273,14 @@ test('a seen note passed by two prompts is dropped as ignored', async ($, on) =>
   await $.turn.start({ text: 'go', turnId: 'turn-1' } as never)
   await step($, 6)
   await clock.settle()
-  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeDefined()
 
-  await $.turn.start({ text: 'a', turnId: 'turn-2' } as never)
-  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeDefined()
-  await $.turn.start({ text: 'b', turnId: 'turn-3' } as never)
-  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
+  await ui.press({ key: 'note-1' })
+  expect(await ui.find({ type: 'Input', key: 'note-input-1-0' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'know-submit' })).toBeUndefined()
+  // The quick answers stay.
+  expect(await ui.find({ type: 'Button', key: 'note-understood-1' })).toBeDefined()
+  await $.turn.complete({ turnId: 'turn-1', reason: 'answer', answer: '' } as never)
+  expect(await ui.find({ type: 'Input', key: 'note-input-1-0' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -237,9 +340,9 @@ test('Submit sends the note and the reply to the main agent', async ($, on) => {
 
   await ui.press({ key: 'note-1' })
   await ui.input({ key: 'note-input-1-0', text: 'is it worth it?' })
-  await ui.press({ key: 'note-submit-1' })
-  expect(sent[0]).toContain('> Heads up · We turned on caching')
-  expect(sent[0]).toContain('is it worth it?')
+  await ui.press({ key: 'know-submit' })
+  expect(sent[0]).toContain('> K1 · Heads up · We turned on caching')
+  expect(sent[0]).toContain('Reply to K1: is it worth it?')
   expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -265,23 +368,9 @@ test('a saved reply stays in its field, and a typed one is sent without Enter', 
   expect((await ui.find({ type: 'Input', key: 'note-input-1-1' }))?.props).toMatchObject({ value: 'first' })
   await ui.input({ key: 'note-input-1-1', text: 'second thought', kind: 'change' })
   expect(await ui.find({ type: 'Text', text: /● K1/ })).toBeDefined()
-  await ui.press({ key: 'note-submit-1' })
+  await ui.press({ key: 'know-submit' })
   expect(sent[0]).toContain('second thought')
   expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('skips left by ignored notes are used up before the next check', async ($, on) => {
-  const { clock, forks } = world(on, { store: { knowSkips: 2 } })
-  const ui = await $.ui.mount(PANE)
-  await ui.press({ key: 'tab-know' })
-  await ui.press({ key: 'know-toggle' })
-  for (const turn of [1, 2, 3]) {
-    await $.turn.start({ text: 'go', turnId: `turn-${turn}` } as never)
-    await step($, 6, `turn-${turn}`)
-    await clock.settle()
-  }
-  expect(forks).toHaveLength(1)
   await ui.unmount()
 })
 
@@ -346,8 +435,10 @@ test('a dropped note prompt keeps the note', async ($, on) => {
   await $.turn.complete({ turnId: 'turn-1', reason: 'answer', answer: '' } as never)
 
   await ui.press({ key: 'note-1' })
-  await ui.press({ key: 'note-submit-1' })
-  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeDefined()
+  await ui.input({ key: 'note-input-1-0', text: 'keep me' })
+  await ui.press({ key: 'know-submit' })
+  expect(await ui.find({ type: 'Text', text: /● K1/ })).toBeDefined()
+  expect((await ui.find({ type: 'Input', key: 'note-input-1-1' }))?.props).toMatchObject({ value: 'keep me' })
   await ui.unmount()
 })
 

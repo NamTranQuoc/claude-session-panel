@@ -5,9 +5,9 @@ import type { SessionPanelChat, SessionPanelDecision, SessionPanelNote, SessionP
 import { DESCRIPTION, INPUT_SCHEMA, registerDecisions, TOOL } from './decisions'
 import { registerExplain } from './explain'
 import { knowLive, registerKnow } from './know'
-import { checkOutcome, IGNORED_AFTER_PROMPTS, isCheckStep, KEPT_LINES, knowPrompt, MAX_OPEN_NOTES, skipsAfter } from './know-prompt'
+import { checkOutcome, isCheckStep, KEPT_LINES, knowPrompt, MAX_OPEN_NOTES } from './know-prompt'
 import { registerOverview } from './overview'
-import { count, live, NO_SPENDING, PANE, strings, withSpend } from './shared'
+import { live, NO_SPENDING, PANE, strings, withSpend } from './shared'
 import type { CacheTtl } from './shared'
 import { effortOf, endSubagent, registerSubagents } from './subagents'
 import { RULES, SECTION_ID, takesRules } from './system'
@@ -32,11 +32,7 @@ export const register: Register = on => {
     const openCount = (await read($, decisions)).length
     const noteCount = (await read($, notes)).length
     const body = await next(e)
-    // Opening Know shows its notes: from then on, prompts that pass them by count (`turn.start`).
-    const show = async (id: SessionPanelTab) => {
-      await update($, tab, () => id)
-      if (id === 'know') await update($, notes, all => all.map(n => ({ ...n, isSeen: true })))
-    }
+    const show = (id: SessionPanelTab) => update($, tab, () => id)
 
     const item = (id: SessionPanelTab, label: string) => (
       <Box marginRight={2}>
@@ -96,28 +92,6 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       live.isMainRunning = true
       live.turnId = e.turnId
-      // A prompt passes the seen notes by; one passed by twice is dropped as ignored, and ignored ones
-      // in a row make the next checks skip (`skipsAfter`). A store failure leaves the notes as they were.
-      try {
-        let ignored = 0
-        await update($, notes, all => {
-          ignored = 0
-
-          return all.flatMap(n => {
-            if (!n.isSeen) return [n]
-            if (n.promptsPast + 1 < IGNORED_AFTER_PROMPTS) return [{ ...n, promptsPast: n.promptsPast + 1 }]
-            ignored += 1
-            return []
-          })
-        })
-        if (ignored) {
-          const inRow = count(await $.store.get('knowIgnored')) + ignored
-          await $.store.set('knowIgnored', inRow)
-          await $.store.set('knowSkips', skipsAfter(inRow))
-        }
-      } catch {
-        // The turn goes on; only the ignore count missed this prompt.
-      }
       $.ui.invalidate('ui.render')
     }
 
@@ -147,11 +121,6 @@ export const register: Register = on => {
       if (!(await read($, isKnowOn)) || (await read($, notes)).length >= MAX_OPEN_NOTES) return
       const panes = await $.ui.panes()
       if (!panes.some(p => p.id === PANE && p.isPlaced && p.isShown)) return
-      const skips = count(await $.store.get('knowSkips'))
-      if (skips > 0) {
-        await $.store.set('knowSkips', skips - 1)
-        return
-      }
 
       const seen = strings(await $.store.get('knowSeen'))
       const known = strings(await $.store.get('knowKnown'))
@@ -182,9 +151,7 @@ export const register: Register = on => {
         const id = await read($, nextNoteId)
         await update($, nextNoteId, n => n + 1)
         const shownAt = await $.clock.now()
-        // Offered while Know is the tab on show, the note is seen at once.
-        const isSeen = (await read($, tab)) === 'know'
-        await update($, notes, all => [...all, { id, line: note.line, tag: note.tag, explanation: note.explanation, shownAt, isSeen, promptsPast: 0, draft: '' }])
+        await update($, notes, all => [...all, { id, line: note.line, tag: note.tag, explanation: note.explanation, shownAt, draft: '' }])
         await $.store.set('knowSeen', [...seen, note.line].slice(-KEPT_LINES))
         knowLive.offeredTurn = turnId
       }

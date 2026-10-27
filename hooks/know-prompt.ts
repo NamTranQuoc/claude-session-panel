@@ -8,16 +8,11 @@ import { inert, quote } from './shared'
 export const CHECK_EVERY = 6
 // Unanswered notes the Know tab holds at most; at this many, checks stop.
 export const MAX_OPEN_NOTES = 3
-// Seen prompts that pass an unanswered note by: it is dropped as ignored.
-export const IGNORED_AFTER_PROMPTS = 2
 // Lines kept to skip next time: offered ones and the ones the user said they knew.
 export const KEPT_LINES = 50
 export const MAX_LINE_LENGTH = 240
 // An explanation past this many characters is cut, so a long reply cannot swamp the tab.
 const MAX_EXPLANATION_LENGTH = 4000
-// Ignored notes in a row before checks are skipped, and the most skipped in a row.
-const IGNORED_FREE = 2
-const MAX_SKIPPED = 16
 
 const FRAME = `<system-reminder>This is a side request from the session panel's "Know" check, not from the user. Answer it in this one response.
 - You are a separate, short-lived agent. The main agent is not interrupted and keeps working; do not talk about being interrupted.
@@ -195,15 +190,17 @@ export const checkOutcome = (
   return { outcome: 'shown', note: parsed }
 }
 
-// Checks to skip after `ignored` notes in a row were passed by: none for the first two, then 1, 2, 4, … 16.
-export const skipsAfter = (ignored: number) => (ignored <= IGNORED_FREE ? 0 : Math.min(MAX_SKIPPED, 2 ** (ignored - IGNORED_FREE - 1)))
-
-// The step-level part of a check's gate; the rest (flag, pane, open notes, skips) the hook reads.
+// The step-level part of a check's gate; the rest (flag, pane, open notes) the hook reads.
 export const isCheckStep = (index: number) => index > 0 && index % CHECK_EVERY === 0
 
-// What Submit sends: the note quoted, then the user's reply.
-export const noteDraft = (note: { tag: string; line: string; explanation: string }, reply: string) => {
-  const quoted = quote([`${note.tag} · ${note.line}`, ...(note.explanation ? ['', note.explanation] : [])].join('\n'))
+// What Submit sends: each note quoted as the side check wrote it, then the user's reply to it, so the
+// prompt still reads once the conversation is compacted.
+export const noteDraft = (replied: readonly { id: number; tag: string; line: string; explanation: string; draft: string }[]) =>
+  [
+    "Replies to notes offered by a side agent. Each note is quoted as it wrote it; the line after it is the user's reply.",
+    ...replied.map(n => {
+      const quoted = quote([`K${n.id} · ${n.tag} · ${n.line}`, ...(n.explanation ? ['', n.explanation] : [])].join('\n'))
 
-  return [inert(`Here is a note offered by a side agent:\n\n${quoted}`), reply.trim()].filter(Boolean).join('\n\n')
-}
+      return `${inert(quoted)}\n\nReply to K${n.id}: ${n.draft.trim()}`
+    }),
+  ].join('\n\n')

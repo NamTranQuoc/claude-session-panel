@@ -49,7 +49,7 @@ export type SessionPanelDecision = {
 
 export type SessionPanelNoteTag = 'You should know' | 'Heads up'
 
-// A note the side check found worth knowing; it stays until the user answers it or ignores it.
+// A note the side check found worth knowing; it stays until the user answers it or sends a reply.
 export type SessionPanelNote = {
   // Shown as K<id>; never reused within a session.
   id: number
@@ -58,10 +58,6 @@ export type SessionPanelNote = {
   // Markdown: a bold title line, then the body; '' when the check wrote none.
   explanation: string
   shownAt: number
-  // The Know tab was drawn with this note in it; only then do prompts count as passing it by.
-  isSeen: boolean
-  // Prompts submitted since it was seen.
-  promptsPast: number
   // The user's reply, saved from the Input; Submit sends it to the main agent under the quoted note.
   draft: string
   // Times the reply was saved: part of the reply Input's key, as a decision's `saves`.
