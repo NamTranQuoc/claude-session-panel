@@ -76,7 +76,7 @@ Requirements:
   - **Explain**: shown instead when the check wrote no explanation (one more fork).
 - Replies work as Decisions' answers. The field is several lines tall; `●` marks a note with a reply. Enter saves the reply, and the field keeps showing it.
 - **Submit**, below the list beside `2 replies ready`, sends every reply, typed or saved, to the main agent as one prompt: each note quoted as the check wrote it (`K1 · Heads up · <line>` and its explanation), then `Reply to K1: your text`. Sent notes leave the list, and later checks skip their topics; notes without a reply stay. If the prompt is refused, the notes stay with their replies.
-- While the main agent is working, the reply field and Submit are locked; the list, the details and the quick answers stay usable.
+- While the main agent is working, you can still reply and press Submit: the prompt waits in the queue and runs when the turn ends.
 - A note stays until you answer it or send a reply; prompts in chat do not drop it.
 - At most 3 open notes; at 3, checks stop. One note per turn; a line already offered or known is not offered again.
 - Under the toggle: the last check's outcome and its tokens (`in`, `cached`, `written`, `out`).

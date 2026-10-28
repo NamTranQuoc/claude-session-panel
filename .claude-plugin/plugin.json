@@ -1,6 +1,6 @@
 {
   "name": "session-panel",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Right-hand panel with four tabs: overview (model, usage, git, subagents), explain side chats, the decisions the main agent needs from you, and notes worth knowing from a side check.",
   "author": { "name": "Nam Tran" },
   "license": "MIT"

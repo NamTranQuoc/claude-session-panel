@@ -95,9 +95,8 @@ export const registerKnow = (on: On) => {
     }
     // As Decisions' Submit: typed replies that were not saved are saved first; Submit never needs an
     // Enter. Sent, the replied notes leave the list as known: the prompt quotes them. A dropped prompt
-    // keeps them (the host shows why).
+    // keeps them (the host shows why). Mid-turn the host queues the prompt until the turn ends.
     const submit = async () => {
-      if (live.isMainRunning) return
       const pending = new Map(typed)
       typed.clear()
       let saved: SessionPanelNote[] = []
@@ -132,7 +131,6 @@ export const registerKnow = (on: On) => {
     )
 
     const readyCount = list.filter(n => replyOf(n).trim()).length
-    const isLocked = live.isMainRunning
 
     if (list.length === 0) {
       return (
@@ -184,10 +182,10 @@ export const registerKnow = (on: On) => {
               </Box>
             </Box>
             {/* Outside the bordered box: the host sizes an Input to the pane's full width. */}
-            {isLocked || !Input ? (
+            {!Input ? (
               <Text dimColor>
                 {replyOf(selected) ? `reply: ${replyOf(selected)} · ` : ''}
-                {isLocked ? 'main agent is running' : 'this surface has no text input'}
+                this surface has no text input
               </Text>
             ) : (
               // A new key per save, as in Decisions: the host empties a field once Enter is handled.
@@ -205,11 +203,7 @@ export const registerKnow = (on: On) => {
         ) : null}
         <Box marginTop={1} justifyContent="space-between">
           <Text dimColor>{`${readyCount} repl${readyCount === 1 ? 'y' : 'ies'} ready`}</Text>
-          {isLocked ? (
-            <Text dimColor>main agent is running</Text>
-          ) : (
-            <Button key="know-submit" label="Submit" variant="primary" onPress={() => void submit()} />
-          )}
+          <Button key="know-submit" label="Submit" variant="primary" onPress={() => void submit()} />
         </Box>
       </Box>
     )

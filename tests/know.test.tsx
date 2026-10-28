@@ -265,8 +265,14 @@ test('Submit with no reply sends nothing and says so', async ($, on) => {
   await ui.unmount()
 })
 
-test('the reply field and Submit lock while the main agent runs', async ($, on) => {
+test('the reply field and Submit stay open while the main agent runs', async ($, on) => {
   const { clock } = world(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'tab-know' })
   await ui.press({ key: 'know-toggle' })
@@ -275,12 +281,11 @@ test('the reply field and Submit lock while the main agent runs', async ($, on) 
   await clock.settle()
 
   await ui.press({ key: 'note-1' })
-  expect(await ui.find({ type: 'Input', key: 'note-input-1-0' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'know-submit' })).toBeUndefined()
-  // The quick answers stay.
-  expect(await ui.find({ type: 'Button', key: 'note-understood-1' })).toBeDefined()
-  await $.turn.complete({ turnId: 'turn-1', reason: 'answer', answer: '' } as never)
-  expect(await ui.find({ type: 'Input', key: 'note-input-1-0' })).toBeDefined()
+  await ui.input({ key: 'note-input-1-0', text: 'mid-turn reply', kind: 'change' })
+  await ui.press({ key: 'know-submit' })
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toContain('Reply to K1: mid-turn reply')
+  expect(await ui.find({ type: 'Text', text: /K1/ })).toBeUndefined()
   await ui.unmount()
 })
 
